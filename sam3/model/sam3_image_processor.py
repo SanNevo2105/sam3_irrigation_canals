@@ -1,4 +1,6 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
+
+# pyre-unsafe
 from typing import Dict, List
 
 import numpy as np

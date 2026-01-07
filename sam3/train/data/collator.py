@@ -1,5 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
 
+# pyre-unsafe
+
 from dataclasses import dataclass, field as field_ptr_behaviour, fields, is_dataclass
 from typing import Any, get_args, get_origin, List, Union
 

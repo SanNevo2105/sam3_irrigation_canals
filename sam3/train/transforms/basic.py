@@ -1,5 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
 
+# pyre-unsafe
+
 """
 Transforms and data augmentation for both image + bbox.
 """

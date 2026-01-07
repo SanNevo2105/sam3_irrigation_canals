@@ -1,5 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
 
+# pyre-unsafe
+
 """Necks are the interface between a vision backbone and the rest of the detection model"""
 
 from copy import deepcopy

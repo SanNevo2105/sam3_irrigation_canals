@@ -1,5 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
 
+# pyre-unsafe
+
 import os
 from copy import deepcopy
 from typing import Dict, List, Optional, Tuple

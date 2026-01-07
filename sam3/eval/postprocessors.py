@@ -1,5 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
 
+# pyre-unsafe
+
 """Postprocessors class to transform MDETR output according to the downstream task"""
 
 import dataclasses

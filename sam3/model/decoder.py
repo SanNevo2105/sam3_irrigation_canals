@@ -1,4 +1,6 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
+
+# pyre-unsafe
 """
 Transformer decoder.
 Inspired from Pytorch's version, adds the pre-norm variant

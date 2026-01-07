@@ -1,5 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
 
+# pyre-unsafe
+
 from collections import OrderedDict
 from typing import Callable, List, Optional, Tuple, Union
 

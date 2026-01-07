@@ -1,5 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
 
+# pyre-unsafe
+
 """
 ViTDet backbone adapted from Detectron2.
 This module implements Vision Transformer (ViT) backbone for object detection.

@@ -1,5 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
 
+# pyre-unsafe
+
 """Provides utility to combine a vision backbone with a language backbone."""
 
 from copy import copy

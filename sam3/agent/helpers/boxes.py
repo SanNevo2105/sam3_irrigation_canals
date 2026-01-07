@@ -1,5 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
 
+# pyre-unsafe
+
 import math
 from enum import IntEnum, unique
 from typing import List, Tuple, Union

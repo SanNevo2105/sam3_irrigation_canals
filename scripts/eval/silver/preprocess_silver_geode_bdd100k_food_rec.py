@@ -1,4 +1,6 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
+
+# pyre-unsafe
 import argparse
 from multiprocessing import Pool
 from pathlib import Path

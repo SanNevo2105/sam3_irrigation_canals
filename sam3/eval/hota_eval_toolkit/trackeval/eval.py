@@ -1,5 +1,7 @@
 # flake8: noqa
 
+# pyre-unsafe
+
 import os
 import time
 import traceback

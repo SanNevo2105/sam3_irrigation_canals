@@ -1,6 +1,8 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
 # Based on https://github.com/IDEA-Research/GroundingDINO
 
+# pyre-unsafe
+
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
