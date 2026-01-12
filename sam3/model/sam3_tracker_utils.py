@@ -6,7 +6,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from numpy.typing import NDArray
-
 from sam3.model.edt import edt_triton
 
 
