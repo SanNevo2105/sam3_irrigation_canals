@@ -627,7 +627,7 @@ class Sam3VideoInference(Sam3VideoBase):
         ## Compile Tracker model components
         self.tracker.maskmem_backbone.forward = compile_wrapper(
             self.tracker.maskmem_backbone.forward,
-            mode="max-autotune",
+            mode="max-autotune-no-cudagraphs",
             fullgraph=True,
             dynamic=False,
         )
