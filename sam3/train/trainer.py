@@ -1069,6 +1069,23 @@ class Trainer:
         self.logger = Logger(self.logging_conf)
 
         self.model = instantiate(self.model_conf, _convert_="all")
+
+        # # Freeze large backbones to reduce VRAM usage
+        # for name, param in self.model.named_parameters():
+        #     if name.startswith("backbone.vision_backbone"):
+        #         param.requires_grad = False
+
+        # parameter whitelisting to reduce GPU VRAM usage
+        for name, param in self.model.named_parameters():
+            train_this = (
+                name.startswith("transformer.decoder")
+                or name.startswith("segmentation_head.mask_predictor")
+                or name.startswith("segmentation_head.instance_seg_head")
+                or name.startswith("segmentation_head.cross_attend_prompt")
+                or name.startswith("segmentation_head.cross_attn_norm")
+            )
+            param.requires_grad = train_this
+
         print_model_summary(self.model)
 
         self.loss = None
