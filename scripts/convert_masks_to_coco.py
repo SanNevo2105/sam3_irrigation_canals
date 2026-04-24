@@ -1,0 +1,329 @@
+#!/usr/bin/env python3
+"""
+Convert a dataset of images and binary mask pairs into COCO JSON format
+for SAM3 finetuning.  Supports PNG, TIFF, and any other Pillow-readable
+format.
+
+Default (PNG) dataset structure:
+    dataset_root/
+    ├── train/
+    │   ├── images/     <- image_1.png, image_2.png, ...
+    │   └── masks/      <- mask_1.png,  mask_2.png,  ...
+    ├── val/
+    │   ├── images/
+    │   └── masks/
+    └── test/
+        ├── images/
+        └── masks/
+
+Road / TIFF dataset structure (images live directly in the split folder;
+masks live in a sibling <split>_labels/ folder):
+    dataset_root/
+    ├── train/          <- 10078660_15.tiff, ...
+    ├── train_labels/   <- 10078660_15.tif,  ...
+    ├── val/
+    ├── val_labels/
+    ├── test/
+    └── test_labels/
+
+Images and masks are matched by their full filename stem
+(e.g., 10078660_15.tiff ↔ 10078660_15.tif).
+The output COCO JSON is written to <split>/_annotations.coco.json.
+
+Usage – default PNG layout:
+    python convert_masks_to_coco.py \\
+        --dataset_path /path/to/your/dataset \\
+        --category_name my_class \\
+        [--splits train val test]
+
+Usage – road TIFF layout:
+    python convert_masks_to_coco.py \\
+        --dataset_path sam3/train/data/road \\
+        --category_name road \\
+        --splits train val test \\
+        --image_extensions tiff \\
+        --mask_extensions tif \\
+        --image_subdir . \\
+        --mask_dir_template {split}_labels \\
+        --output_dir /path/to/coco_output
+
+If --output_dir is given, each split's JSON is written to
+    <output_dir>/<split>/_annotations.coco.json
+and the directory is created automatically if it does not exist.
+If --output_dir is omitted, the JSON is written next to the split
+folder inside --dataset_path (original default behaviour).
+"""
+
+import argparse
+import json
+import os
+from pathlib import Path
+from typing import Dict, List, Tuple
+
+import numpy as np
+from PIL import Image
+from pycocotools import mask as mask_util
+from tqdm import tqdm
+
+
+# ---------------------------------------------------------------------------
+# Mask helpers
+# ---------------------------------------------------------------------------
+
+def load_binary_mask(mask_path: str) -> np.ndarray:
+    """Load a mask (PNG, TIFF, or any Pillow-supported format) and return
+    a uint8 binary array (0 / 1).  Multi-band TIFFs are collapsed to
+    grayscale via Pillow's 'L' conversion before thresholding."""
+    with Image.open(mask_path) as im:
+        mask = np.array(im.convert("L"))
+    return (mask > 0).astype(np.uint8)
+
+
+def mask_to_rle(mask: np.ndarray) -> Dict:
+    """Encode a binary uint8 mask as COCO RLE (Fortran column-major order)."""
+    rle = mask_util.encode(np.asfortranarray(mask))
+    rle["counts"] = rle["counts"].decode("utf-8")   # JSON-serialisable
+    return rle
+
+
+def mask_to_bbox(mask: np.ndarray) -> List[float]:
+    rows = np.any(mask, axis=1)
+    cols = np.any(mask, axis=0)
+    if not rows.any() or not cols.any():
+        return [0.0, 0.0, 0.0, 0.0]
+    y_idx = np.where(rows)[0]
+    x_idx = np.where(cols)[0]
+    y_min, y_max = int(y_idx[0]), int(y_idx[-1])
+    x_min, x_max = int(x_idx[0]), int(x_idx[-1])
+    return [float(x_min), float(y_min), float(x_max - x_min + 1), float(y_max - y_min + 1)]
+
+
+# ---------------------------------------------------------------------------
+# Split processing
+# ---------------------------------------------------------------------------
+
+def _stem_key(path: Path) -> str:
+    """Return the full filename stem as the matching key.
+
+    Using the full stem (e.g. ``10078660_15``) avoids collisions that
+    would arise from extracting only the first integer when filenames
+    contain multiple numeric components.
+    """
+    return path.stem
+
+
+def build_image_mask_pairs(
+    images_dir: Path,
+    masks_dir: Path,
+    image_exts: Tuple[str, ...] = ("png",),
+    mask_exts: Tuple[str, ...]  = ("png",),
+) -> List[Tuple[Path, Path]]:
+    """
+    Match images to masks by their full filename stem.
+
+    All extensions in *image_exts* / *mask_exts* are globbed so that
+    mixed-extension directories (e.g. both .tif and .tiff) are handled
+    correctly.  Returns a list of (image_path, mask_path) sorted
+    lexicographically by stem.
+    """
+    image_by_stem: Dict[str, Path] = {}
+    for ext in image_exts:
+        for p in images_dir.glob(f"*.{ext}"):
+            image_by_stem[_stem_key(p)] = p
+
+    mask_by_stem: Dict[str, Path] = {}
+    for ext in mask_exts:
+        for p in masks_dir.glob(f"*.{ext}"):
+            mask_by_stem[_stem_key(p)] = p
+
+    common_stems = sorted(set(image_by_stem) & set(mask_by_stem))
+
+    only_images = set(image_by_stem) - set(mask_by_stem)
+    only_masks  = set(mask_by_stem)  - set(image_by_stem)
+    if only_images:
+        print(f"  ⚠  {len(only_images)} image(s) with no matching mask – skipped.")
+    if only_masks:
+        print(f"  ⚠  {len(only_masks)} mask(s) with no matching image – skipped.")
+
+    return [(image_by_stem[s], mask_by_stem[s]) for s in common_stems]
+
+
+def process_split(
+    split_name: str,
+    images_dir: Path,
+    masks_dir: Path,
+    category_id: int,
+    image_exts: Tuple[str, ...] = ("png",),
+    mask_exts: Tuple[str, ...]  = ("png",),
+) -> Tuple[List[Dict], List[Dict]]:
+    """Build COCO images and annotations lists for one split."""
+    pairs = build_image_mask_pairs(images_dir, masks_dir, image_exts, mask_exts)
+    print(f"  {split_name}: {len(pairs)} matched pairs found.")
+
+    images: List[Dict] = []
+    annotations: List[Dict] = []
+
+    for img_id, (img_path, mask_path) in enumerate(tqdm(pairs, desc=f"  Encoding {split_name}")):
+        with Image.open(img_path) as im:
+            w, h = im.size
+
+        images.append({
+            "id": img_id,
+            "file_name": img_path.name,
+            "width": w,
+            "height": h,
+        })
+
+        mask = load_binary_mask(str(mask_path))
+        # Skip images whose mask is completely empty
+        if mask.sum() == 0:
+            continue
+        rle  = mask_to_rle(mask)
+        bbox = mask_to_bbox(mask)
+        area = float(np.sum(mask))
+
+        annotations.append({
+            "id": img_id,           # one annotation per image
+            "image_id": img_id,
+            "category_id": category_id,
+            "segmentation": rle,    # COCO RLE – ready for pycocotools
+            "area": area,
+            "bbox": bbox,           # [x, y, w, h]
+            "iscrowd": 0,
+        })
+
+    return images, annotations
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Convert a paired image/binary-mask dataset to COCO JSON for SAM3."
+    )
+    parser.add_argument(
+        "--dataset_path",
+        required=True,
+        help="Root directory of the dataset (contains split subdirs).",
+    )
+    parser.add_argument(
+        "--category_name",
+        default="object",
+        help="Class name to use in the COCO JSON categories list (default: 'object').",
+    )
+    parser.add_argument(
+        "--splits",
+        nargs="+",
+        default=["train", "val", "test"],
+        help="Which splits to process (default: train val test).",
+    )
+    parser.add_argument(
+        "--image_extensions",
+        nargs="+",
+        default=["png"],
+        metavar="EXT",
+        help=(
+            "File extension(s) for images, without leading dot "
+            "(default: png).  Example: --image_extensions tiff"
+        ),
+    )
+    parser.add_argument(
+        "--mask_extensions",
+        nargs="+",
+        default=["png"],
+        metavar="EXT",
+        help=(
+            "File extension(s) for masks, without leading dot "
+            "(default: png).  Example: --mask_extensions tif"
+        ),
+    )
+    parser.add_argument(
+        "--image_subdir",
+        default="images",
+        help=(
+            "Subdirectory inside each split folder that holds the images "
+            "(default: 'images').  Pass '.' to use the split folder itself, "
+            "e.g. for the road TIFF dataset where images live in road/train/."
+        ),
+    )
+    parser.add_argument(
+        "--mask_dir_template",
+        default="{split}/masks",
+        help=(
+            "Template for the mask directory relative to --dataset_path. "
+            "The literal string '{split}' is replaced by the current split name. "
+            "Default: '{split}/masks'.  "
+            "Road TIFF example: '{split}_labels'."
+        ),
+    )
+    parser.add_argument(
+        "--output_dir",
+        default=None,
+        metavar="DIR",
+        help=(
+            "Directory where the _annotations.coco.json files will be written. "
+            "Each split produces <output_dir>/<split>/_annotations.coco.json. "
+            "The directory (and split subdirectory) are created if they do not exist. "
+            "If omitted, the JSON is written into <dataset_path>/<split>/ "
+            "(original default behaviour)."
+        ),
+    )
+    args = parser.parse_args()
+
+    root        = Path(args.dataset_path)
+    image_exts  = tuple(args.image_extensions)
+    mask_exts   = tuple(args.mask_extensions)
+    out_root    = Path(args.output_dir) if args.output_dir else root
+
+    categories = [
+        {"id": 1, "name": args.category_name, "supercategory": args.category_name}
+    ]
+
+    for split in args.splits:
+        # Resolve image directory
+        if args.image_subdir == ".":
+            images_dir = root / split
+        else:
+            images_dir = root / split / args.image_subdir
+
+        # Resolve mask directory (template supports sibling folders like train_labels/)
+        masks_dir = root / args.mask_dir_template.format(split=split)
+
+        out_dir  = out_root / split
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_json = out_dir / "_annotations.coco.json"
+
+        if not images_dir.is_dir() or not masks_dir.is_dir():
+            print(
+                f"[skip] {split}: images dir '{images_dir}' or "
+                f"masks dir '{masks_dir}' not found."
+            )
+            continue
+
+        print(f"\n── {split} ──────────────────────────────")
+        images, annotations = process_split(
+            split, images_dir, masks_dir,
+            category_id=1,
+            image_exts=image_exts,
+            mask_exts=mask_exts,
+        )
+
+        coco_dict = {
+            "images": images,
+            "annotations": annotations,
+            "categories": categories,
+        }
+
+        with open(out_json, "w") as f:
+            json.dump(coco_dict, f)
+
+        print(f"  ✓ Wrote {out_json}")
+        print(f"      images: {len(images)}   annotations: {len(annotations)}")
+
+    print("\nDone. COCO JSON files are ready for SAM3 training.")
+
+
+if __name__ == "__main__":
+    main()

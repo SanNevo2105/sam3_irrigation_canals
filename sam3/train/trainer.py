@@ -299,6 +299,12 @@ class Trainer:
     def _setup_ddp_distributed_training(self, distributed_conf, accelerator):
         assert isinstance(self.model, torch.nn.Module)
 
+        # activate ddp only when WORLD_SIZE > 1, since DDP adds overhead that can actually slow down training in the single-process case
+        world_size = int(os.environ.get("WORLD_SIZE", "1"))
+        if world_size <= 1:
+            logging.info("Single-process run detected; skipping DistributedDataParallel.")
+            return
+        
         self.model = nn.parallel.DistributedDataParallel(
             self.model,
             device_ids=[self.local_rank] if accelerator == "cuda" else [],
@@ -1076,15 +1082,15 @@ class Trainer:
         #         param.requires_grad = False
 
         # parameter whitelisting to reduce GPU VRAM usage
-        for name, param in self.model.named_parameters():
-            train_this = (
-                name.startswith("transformer.decoder")
-                or name.startswith("segmentation_head.mask_predictor")
-                or name.startswith("segmentation_head.instance_seg_head")
-                or name.startswith("segmentation_head.cross_attend_prompt")
-                or name.startswith("segmentation_head.cross_attn_norm")
-            )
-            param.requires_grad = train_this
+        # for name, param in self.model.named_parameters():
+        #     train_this = (
+        #         name.startswith("transformer.decoder")
+        #         or name.startswith("segmentation_head.mask_predictor")
+        #         or name.startswith("segmentation_head.instance_seg_head")
+        #         or name.startswith("segmentation_head.cross_attend_prompt")
+        #         or name.startswith("segmentation_head.cross_attn_norm")
+        #     )
+        #     param.requires_grad = train_this
 
         print_model_summary(self.model)
 

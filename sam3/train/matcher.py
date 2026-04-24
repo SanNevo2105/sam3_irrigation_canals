@@ -6,6 +6,8 @@
 Modules to compute the matching cost and solve the corresponding LSAP.
 """
 
+import logging
+
 import numpy as np
 import torch
 from sam3.model.box_ops import box_cxcywh_to_xyxy, box_iou, generalized_box_iou
@@ -567,6 +569,25 @@ class BinaryHungarianMatcherV2(nn.Module):
                 out_is_valid = out_is_valid[batch_keep]
         assert out_bbox.shape[0] == tgt_bbox.shape[0]
         assert out_bbox.shape[0] == num_boxes.shape[0]
+
+        # Sanitize predicted boxes: replace NaN/Inf with a safe centroid value
+        # (BF16 overflow or gradient explosion in the box head can produce NaN/Inf,
+        # which causes scipy.linear_sum_assignment to crash.  Replacing with a
+        # degenerate-but-finite box keeps training alive for these rare batches.)
+        if not torch.isfinite(out_bbox).all():
+            n_bad = int((~torch.isfinite(out_bbox)).sum())
+            logging.warning(
+                f"[MATCHER] out_bbox has {n_bad} non-finite entries "
+                f"(shape {tuple(out_bbox.shape)}); replacing with centroid 0.5."
+            )
+            out_bbox = torch.nan_to_num(out_bbox, nan=0.5, posinf=1.0, neginf=0.0)
+
+        if not torch.isfinite(out_score).all():
+            n_bad = int((~torch.isfinite(out_score)).sum())
+            logging.warning(
+                f"[MATCHER] out_score has {n_bad} non-finite entries; clamping."
+            )
+            out_score = torch.nan_to_num(out_score, nan=0.0, posinf=10.0, neginf=-10.0)
 
         # Compute the L1 cost between boxes
         cost_bbox = torch.cdist(out_bbox, tgt_bbox, p=1)

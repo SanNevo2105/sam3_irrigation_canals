@@ -172,7 +172,7 @@ scratch:
   gather_pred_via_filesys: false
 
   # Learning rates
-  lr_scale: 0.1
+  lr_scale: 0.01
   lr_transformer:      ${times:8e-4,${scratch.lr_scale}}
   lr_vision_backbone:  ${times:2.5e-4,${scratch.lr_scale}}
   lr_language_backbone: ${times:5e-5,${scratch.lr_scale}}
@@ -311,7 +311,7 @@ trainer:
 
     gradient_clip:
       _target_: sam3.train.optim.optimizer.GradientClipper
-      max_norm: 0.1
+      max_norm: 1
       norm_type: 2
 
     param_group_modifiers:
