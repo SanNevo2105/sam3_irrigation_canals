@@ -361,6 +361,21 @@ class Trainer:
             patterns=self.checkpoint_conf.skip_saving_parameters, state_dict=state_dict
         )
 
+        # Refuse to save a checkpoint whose weights contain NaN/Inf.
+        # A corrupt checkpoint is worse than no checkpoint: it would propagate
+        # the failure across restarts and make recovery impossible.
+        bad_params = [
+            k for k, v in state_dict.items() if not torch.isfinite(v).all()
+        ]
+        if bad_params:
+            logging.error(
+                f"[save_checkpoint] Refusing to save checkpoint at epoch {epoch}: "
+                f"{len(bad_params)} parameter tensor(s) contain NaN/Inf values "
+                f"({bad_params[:5]}{'...' if len(bad_params) > 5 else ''}). "
+                f"The previous checkpoint on disk is kept intact."
+            )
+            return
+
         checkpoint = {
             "model": state_dict,
             "optimizer": self.optim.optimizer.state_dict(),
@@ -444,6 +459,25 @@ class Trainer:
 
         with g_pathmgr.open(ckpt_path, "rb") as f:
             checkpoint = torch.load(f, map_location="cpu")
+
+        # Validate the checkpoint weights before loading them into the model.
+        # A corrupted checkpoint (one that was saved with NaN weights despite
+        # the save_checkpoint guard being absent in older runs) would poison
+        # every forward pass from the very first step, reproducing the exact
+        # failure seen in job 940898.
+        bad_params = [
+            k for k, v in checkpoint["model"].items()
+            if isinstance(v, torch.Tensor) and not torch.isfinite(v).all()
+        ]
+        if bad_params:
+            raise RuntimeError(
+                f"[load_checkpoint] Checkpoint at '{ckpt_path}' contains "
+                f"NaN/Inf values in {len(bad_params)} parameter tensor(s) "
+                f"({bad_params[:5]}{'...' if len(bad_params) > 5 else ''}). "
+                f"Cannot resume from a corrupt checkpoint. "
+                f"Please restore from an earlier epoch's checkpoint."
+            )
+
         load_state_dict_into_model(
             model=self.model,
             state_dict=checkpoint["model"],
@@ -799,6 +833,16 @@ class Trainer:
         self.model.train()
         end = time.time()
 
+        # Keep a CPU copy of model weights at the start of each epoch.
+        # If the forward pass produces NaN outputs AND the optimizer corrupts
+        # the weights, we restore from this snapshot so training can continue.
+        # We copy to CPU to avoid occupying extra GPU memory.
+        _epoch_weight_snapshot = {
+            k: v.detach().cpu().clone()
+            for k, v in unwrap_ddp_if_wrapped(self.model).state_dict().items()
+        }
+        _nan_detected_this_epoch = False
+
         for data_iter, batch in enumerate(train_loader):
             # measure data loading time
             data_time_meter.update(time.time() - end)
@@ -808,7 +852,42 @@ class Trainer:
             # )  # move tensors in a tensorclass
 
             try:
-                self._run_step(batch, phase, loss_mts, extra_loss_mts)
+                step_ok = self._run_step(batch, phase, loss_mts, extra_loss_mts, raise_on_error=False)
+
+                if not step_ok:
+                    # _run_step detected a NaN/Inf loss and zeroed gradients.
+                    # Do NOT call optimizer.step(): AdamW would still apply its
+                    # momentum/variance accumulators even with None gradients,
+                    # silently corrupting the weights.
+                    #
+                    # If this is the very first NaN we have seen this epoch,
+                    # the weights may already be corrupt from a previous step's
+                    # bad gradient that slipped through.  Check the weights now
+                    # and restore the epoch snapshot if needed.
+                    if not _nan_detected_this_epoch:
+                        _nan_detected_this_epoch = True
+                        params_finite = all(
+                            torch.isfinite(p).all()
+                            for p in unwrap_ddp_if_wrapped(self.model).parameters()
+                        )
+                        if not params_finite:
+                            logging.warning(
+                                f"[NaN recovery] Non-finite weights detected at step "
+                                f"{self.steps.get(phase, '?')} (epoch {self.epoch}). "
+                                f"Restoring model to epoch-start snapshot."
+                            )
+                            unwrap_ddp_if_wrapped(self.model).load_state_dict(
+                                {k: v.to(self.device) for k, v in _epoch_weight_snapshot.items()},
+                                strict=True,
+                            )
+                            # Also reset optimizer state so stale Adam moments
+                            # from the corrupt parameters don't re-corrupt weights.
+                            self.optim.optimizer.state.clear()
+                            logging.warning(
+                                "[NaN recovery] Optimizer state cleared. "
+                                "Training will continue from epoch-start weights."
+                            )
+                    continue  # skip scheduler update and optimizer.step()
 
                 # compute gradient and do optim step
                 exact_epoch = self.epoch + float(data_iter) / iters_per_epoch
@@ -911,9 +990,16 @@ class Trainer:
         loss_mts: Dict[str, AverageMeter],
         extra_loss_mts: Dict[str, AverageMeter],
         raise_on_error: bool = True,
-    ):
+    ) -> bool:
         """
-        Run the forward / backward
+        Run the forward / backward.
+
+        Returns True if the step succeeded and gradients are ready for an
+        optimizer step.  Returns False if the batch was skipped (NaN/Inf loss)
+        and gradients have been zeroed — the caller must NOT call
+        optimizer.step() in this case, because AdamW will still apply its
+        momentum/variance accumulators to the parameters even when grads are
+        None, which corrupts the weights.
         """
 
         # it's important to set grads to None, especially with Adam since 0
@@ -955,12 +1041,18 @@ class Trainer:
                 loss_key, loss = loss_dict.popitem()
 
                 if not math.isfinite(loss.item()):
-                    error_msg = f"Loss is {loss.item()}, attempting to stop training"
-                    logging.error(error_msg)
+                    error_msg = (
+                        f"Loss is {loss.item()} at step {self.steps.get(phase, '?')} "
+                        f"(epoch {self.epoch}) — skipping batch and zeroing gradients."
+                    )
+                    logging.warning(error_msg)
+                    # Zero out any partial gradients accumulated before the bad
+                    # forward so the optimizer never sees NaN/Inf values.
+                    self.optim.zero_grad(set_to_none=True)
                     if raise_on_error:
                         raise FloatingPointError(error_msg)
                     else:
-                        return
+                        return False  # signal: do NOT call optimizer.step()
 
                 self.scaler.scale(loss).backward()
                 loss_mts[loss_key].update(loss.item(), batch_size)
@@ -970,6 +1062,8 @@ class Trainer:
                             extra_loss_key, self.device, ":.2e"
                         )
                     extra_loss_mts[extra_loss_key].update(extra_loss.item(), batch_size)
+
+        return True  # gradients are ready; caller should call optimizer.step()
 
     def _log_meters_and_save_best_ckpts(self, phases: List[str]):
         logging.info("Synchronizing meters")
@@ -1082,15 +1176,15 @@ class Trainer:
         #         param.requires_grad = False
 
         # parameter whitelisting to reduce GPU VRAM usage
-        # for name, param in self.model.named_parameters():
-        #     train_this = (
-        #         name.startswith("transformer.decoder")
-        #         or name.startswith("segmentation_head.mask_predictor")
-        #         or name.startswith("segmentation_head.instance_seg_head")
-        #         or name.startswith("segmentation_head.cross_attend_prompt")
-        #         or name.startswith("segmentation_head.cross_attn_norm")
-        #     )
-        #     param.requires_grad = train_this
+        for name, param in self.model.named_parameters():
+            train_this = (
+                name.startswith("transformer.decoder")
+                or name.startswith("segmentation_head.mask_predictor")
+                or name.startswith("segmentation_head.instance_seg_head")
+                or name.startswith("segmentation_head.cross_attend_prompt")
+                or name.startswith("segmentation_head.cross_attn_norm")
+            )
+            param.requires_grad = train_this
 
         print_model_summary(self.model)
 
@@ -1107,9 +1201,19 @@ class Trainer:
         if self.meters_conf:
             self.meters = instantiate(self.meters_conf, _convert_="all")
 
+        # BF16 has the same exponent range as FP32 — gradient scaling is not
+        # needed and actively harmful (the default scale of 65536 amplifies
+        # gradients before the clipper, causing Inf/NaN weight corruption).
+        # Only enable GradScaler when using float16.
+        _scaler_enabled = (
+            self.optim_conf.amp.enabled
+            and get_amp_type(self.optim_conf.amp.amp_dtype) == torch.float16
+            if self.optim_conf
+            else False
+        )
         self.scaler = torch.amp.GradScaler(
             self.device,
-            enabled=self.optim_conf.amp.enabled if self.optim_conf else False,
+            enabled=_scaler_enabled,
         )
 
         self.gradient_clipper = (

@@ -112,8 +112,11 @@ road_train:
         focal_alpha: 0.25
         focal_gamma: 2.0
         weight_dict:
-          loss_mask: 200.0
-          loss_dice: 10.0
+          # Reduced from 200.0/10.0 — the original values produced 40× larger
+          # gradients than the bbox head, driving bfloat16 activations to Inf
+          # and crashing training (job 940869, epoch 5 step ~213).
+          loss_mask: 20.0
+          loss_dice: 5.0
         compute_aux: false
     loss_fn_semantic_seg: null
     scale_by_find_batch_size: ${scratch.scale_by_find_batch_size}
@@ -160,11 +163,13 @@ scratch:
   consistent_transform: False
   max_ann_per_img: 200
 
-  # Normalisation — using ImageNet stats is appropriate for RGB-equivalent TIFF channels
-  train_norm_mean: [0.5, 0.5, 0.5]
-  train_norm_std:  [0.5, 0.5, 0.5]
-  val_norm_mean:   [0.5, 0.5, 0.5]
-  val_norm_std:    [0.5, 0.5, 0.5]
+  # Normalisation — ImageNet stats matching SAM3 pretraining distribution.
+  # These are the values the pretrained backbone was trained with; deviating
+  # from them shifts the input distribution and slows early-epoch convergence.
+  train_norm_mean: [0.485, 0.456, 0.406]
+  train_norm_std:  [0.229, 0.224, 0.225]
+  val_norm_mean:   [0.485, 0.456, 0.406]
+  val_norm_std:    [0.229, 0.224, 0.225]
 
   # DataLoader workers / epochs
   # H100 80GB: increase workers to keep the GPU fed — TIFF decoding is CPU-bound
@@ -177,15 +182,31 @@ scratch:
   gather_pred_via_filesys: false
 
   # Learning rates
-  lr_scale: 0.1
+  # lr_scale reduced from 0.1 → 0.05:
+  #   The model reached AP=0.968 by epoch 4, indicating near-convergence.
+  #   Halving all LRs keeps updates in the low-curvature regime and reduces
+  #   individual gradient step magnitudes, lowering the risk of a single batch
+  #   causing a spike large enough to overflow BF16 activations.
+  #     lr_transformer:      8e-5 → 4e-5
+  #     lr_vision_backbone:  2.5e-5 → 1.25e-5
+  #     lr_language_backbone: 5e-6 → 2.5e-6
+  lr_scale: 0.05
   lr_transformer:      ${times:8e-4,${scratch.lr_scale}}
   lr_vision_backbone:  ${times:2.5e-4,${scratch.lr_scale}}
   lr_language_backbone: ${times:5e-5,${scratch.lr_scale}}
   lrd_vision_backbone: 0.9
   wd: 0.1
-  scheduler_timescale: 20
-  scheduler_warmup: 20
-  scheduler_cooldown: 20
+  # Scheduler steps are in optimizer steps (not epochs).
+  # With target_epoch_size=1500 and train_batch_size=4, one epoch ≈ 375 steps.
+  # Warmup: 1 epoch (unchanged).
+  # Cooldown extended from 750 → 2250 steps (2 → 6 epochs):
+  #   The original cooldown finished at epoch 2, leaving epochs 3-19 at
+  #   near-peak LR with only slow inverse-sqrt decay.  A 6-epoch cooldown
+  #   actively drives the LR down through the critical post-convergence window,
+  #   directly reducing the probability of gradient spikes.
+  scheduler_timescale: 375
+  scheduler_warmup: 375
+  scheduler_cooldown: 2250
 
   # Batch / collation
   # H100 80GB HBM3: 4× batch comfortably fits four 1008px BF16 images
@@ -269,9 +290,10 @@ trainer:
           include_negatives: false
           category_chunk_size: 1
           _partial_: true
-        # TIFF images live directly in road/val/ (no images/ subdir)
-        img_folder: ${paths.images_root}/val/
-        ann_file: ${paths.coco_root}/val/_annotations.coco.json
+        # val_merged = original val (14 imgs) + test (49 imgs) merged by
+        # scripts/merge_coco_splits.py — gives a reliable 63-image eval signal.
+        img_folder: ${paths.images_root}/val_merged/
+        ann_file: ${paths.coco_root}/val_merged/_annotations.coco.json
         transforms: ${road_train.val_transforms}
         max_ann_per_img: 100000
         multiplier: 1
@@ -306,7 +328,7 @@ trainer:
           maxdets: 100
           pred_file_evaluators:
             - _target_: sam3.eval.coco_eval_offline.CocoEvaluatorOfflineWithPredFileEvaluators
-              gt_path: ${paths.coco_root}/val/_annotations.coco.json
+              gt_path: ${paths.coco_root}/val_merged/_annotations.coco.json
               tide: False
               iou_type: "bbox"
 
@@ -318,12 +340,25 @@ trainer:
 
     optimizer:
       _target_: torch.optim.AdamW
+      # Fallback LR for parameter groups not explicitly matched by the
+      # scheduler param_names patterns below (backbone.vision_backbone.*,
+      # backbone.language_backbone.*).  The transformer head and all other
+      # named groups are overridden by the scheduler options — this 1e-6
+      # only applies to any remaining ungrouped parameters (e.g. output
+      # projection biases not caught by the bias pattern).
       lr: 1e-6
       
 
     gradient_clip:
       _target_: sam3.train.optim.optimizer.GradientClipper
-      max_norm: 0.1
+      # max_norm raised from 0.1 → 0.5:
+      #   0.1 is extremely aggressive for an 840M-parameter model — it clips
+      #   almost every gradient vector, severely distorting gradient directions.
+      #   This paradoxically increases instability: the optimizer follows
+      #   heavily distorted directions that can produce non-descent steps.
+      #   0.5 is still conservative but preserves gradient direction faithfully
+      #   on well-behaved batches while still capping true spikes.
+      max_norm: 0.5
       norm_type: 2
 
     param_group_modifiers:

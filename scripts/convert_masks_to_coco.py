@@ -103,13 +103,29 @@ def mask_to_bbox(mask: np.ndarray) -> List[float]:
 # ---------------------------------------------------------------------------
 
 def _stem_key(path: Path) -> str:
-    """Return the full filename stem as the matching key.
+    """Return a normalised matching key for a given file path.
 
-    Using the full stem (e.g. ``10078660_15``) avoids collisions that
-    would arise from extracting only the first integer when filenames
-    contain multiple numeric components.
+    When image and mask filenames share the same numeric suffix but differ
+    in their word prefix (e.g. ``image_1001.png`` vs ``mask_1001.png``),
+    matching on the full stem produces an empty intersection.  Instead we
+    strip any leading alphabetic prefix up to and including the first
+    underscore, so both files key to ``1001``.
+
+    For filenames that contain no underscore (e.g. road TIFFs such as
+    ``10078660_15``) the full stem is preserved, which keeps the existing
+    road-dataset behaviour intact.
     """
-    return path.stem
+    stem = path.stem
+    # Strip a leading word-prefix (e.g. "image_" / "mask_") so that
+    # image_1001.png and mask_1001.png share the common key "1001".
+    # Only strip when the prefix before the first "_" is entirely
+    # alphabetic, so purely-numeric stems like "10078660_15" are
+    # left unchanged.
+    if "_" in stem:
+        prefix, rest = stem.split("_", 1)
+        if prefix.isalpha():
+            return rest
+    return stem
 
 
 def build_image_mask_pairs(

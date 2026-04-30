@@ -109,8 +109,10 @@ landslide_train:
         focal_alpha: 0.25
         focal_gamma: 2.0
         weight_dict:
-          loss_mask: 200.0
-          loss_dice: 10.0
+          # Reduced from 200.0/10.0 — the original values produced 40× larger
+          # gradients than the bbox head, driving bfloat16 activations to Inf.
+          loss_mask: 20.0
+          loss_dice: 5.0
         compute_aux: false
     loss_fn_semantic_seg: null
     scale_by_find_batch_size: ${scratch.scale_by_find_batch_size}
