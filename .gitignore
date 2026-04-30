@@ -152,3 +152,9 @@ Thumbs.db
 # BPE vocabulary files
 *.bpe
 *.vocab
+
+train/data/landslide_dataset
+train/data/road
+train/data/road_coco
+train/data/landslide_dataset.zip
+train/data/road.zip
