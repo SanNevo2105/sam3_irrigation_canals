@@ -153,8 +153,8 @@ Thumbs.db
 *.bpe
 *.vocab
 
-train/data/landslide_dataset
-train/data/road
-train/data/road_coco
-train/data/landslide_dataset.zip
-train/data/road.zip
+sam3/train/data/landslide_dataset
+sam3/train/data/road
+sam3/train/data/road_coco
+sam3/train/data/landslide_dataset.zip
+sam3/train/data/road.zip
