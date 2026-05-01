@@ -96,8 +96,8 @@ landslide_train:
       - _target_: sam3.train.loss.loss_fns.IABCEMdetr
         weak_loss: False
         weight_dict:
-          loss_ce: 20.0
-          presence_loss: 20.0
+          loss_ce: 10.0
+          presence_loss: 10.0
         pos_weight: 10.0
         alpha: 0.25
         gamma: 2
@@ -109,9 +109,10 @@ landslide_train:
         focal_alpha: 0.25
         focal_gamma: 2.0
         weight_dict:
-          # Reduced from 200.0/10.0 — the original values produced 40× larger
-          # gradients than the bbox head, driving bfloat16 activations to Inf.
-          loss_mask: 20.0
+          # Reduced from 200.0/10.0 → 20.0/5.0 → 5.0: repeated BF16 NaN
+          # explosions (job 942937 epoch 13 step 4791) driven by
+          # loss_mask×o2m_weight=40 effective multiplier. 5.0×2=10 is safe.
+          loss_mask: 5.0
           loss_dice: 5.0
         compute_aux: false
     loss_fn_semantic_seg: null
@@ -313,7 +314,7 @@ trainer:
 
     gradient_clip:
       _target_: sam3.train.optim.optimizer.GradientClipper
-      max_norm: 1
+      max_norm: 0.1
       norm_type: 2
 
     param_group_modifiers:

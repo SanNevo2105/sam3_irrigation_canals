@@ -4,7 +4,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --time=04:00:00
-#SBATCH -J sam3_road
+#SBATCH -J sam3_landslide
 #SBATCH -o logs/%x-%j.out
 #SBATCH -e logs/%x-%j.err
 
@@ -34,6 +34,6 @@ export TORCH_DISTRIBUTED_DEBUG=INFO
 
 # ---- Run training ----
 python sam3/train/train.py \
-    --config configs/landslide/landslide_finetune
+    --config configs/landslide/landslide_2
 
 echo "Finished at: $(date)"

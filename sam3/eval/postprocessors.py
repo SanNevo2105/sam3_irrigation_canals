@@ -239,6 +239,42 @@ class PostProcessImage(nn.Module):
         scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=1)
         boxes = boxes * scale_fct[:, None, :]
 
+        # Clamp predicted boxes to valid pixel coordinates.
+        #
+        # The model's box head applies sigmoid to normalised cxcywh coordinates,
+        # which keeps each component in (0, 1).  After multiplying by image size the
+        # result is theoretically within [0, W] / [0, H], but floating-point rounding
+        # and BF16 precision can push a value a fraction of a pixel outside that
+        # range.  Additionally, when GT boxes are near-full-image (e.g. the road
+        # dataset where ~99% of annotations span the whole 1500×1500 tile) the model
+        # concentrates probability mass right at the boundary, making even tiny
+        # numerical drift produce negative x0/y0 or x1/y1 > W/H.  The clamp below
+        # is the correct safety net: it is lossless for well-formed predictions and
+        # corrects the small subset that exceed boundaries.
+        _upper = scale_fct[:, None, :].to(boxes.device)  # [B, 1, 4] — [W, H, W, H]
+        _oob = (
+            (boxes[..., 0] < 0)
+            | (boxes[..., 1] < 0)
+            | (boxes[..., 2] > _upper[..., 2])
+            | (boxes[..., 3] > _upper[..., 3])
+        )
+        if _oob.any():
+            _n = int(_oob.sum().item())
+            _worst_x0 = float(boxes[..., 0].min().item())
+            _worst_y0 = float(boxes[..., 1].min().item())
+            _worst_x1 = float((boxes[..., 2] - _upper[..., 2]).max().item())
+            _worst_y1 = float((boxes[..., 3] - _upper[..., 3]).max().item())
+            logging.warning(
+                f"[POSTPROC] Clamping {_n} predicted box coordinate(s) that exceeded "
+                f"image boundaries (min_x0={_worst_x0:.3f}, min_y0={_worst_y0:.3f}, "
+                f"max_x1_overflow={_worst_x1:.3f}, max_y1_overflow={_worst_y1:.3f}). "
+                f"Likely cause: near-full-image GT boxes training the box head to "
+                f"predict w/h ≈ 1.0 with floating-point drift beyond the boundary."
+            )
+        # Clamp lower bound (x0, y0 ≥ 0) and upper bound (x1 ≤ W, y1 ≤ H).
+        boxes = boxes.clamp(min=0)
+        boxes = torch.min(boxes, _upper)
+
         if self.to_cpu:
             boxes = boxes.cpu()
 

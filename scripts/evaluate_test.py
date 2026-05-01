@@ -240,7 +240,7 @@ def load_model(
             f"Fine-tuned checkpoint not found:\n  {checkpoint_path}\n\n"
             "Either run training first:\n"
             "  python sam3/train/train.py "
-            "-c configs/landslide/landslide_finetune.yaml\n\n"
+            "-c configs/landslide/landslide_2.yaml\n\n"
             "Or load pre-trained weights from HuggingFace with --load-from-hf."
         )
 

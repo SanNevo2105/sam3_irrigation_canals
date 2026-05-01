@@ -1176,15 +1176,15 @@ class Trainer:
         #         param.requires_grad = False
 
         # parameter whitelisting to reduce GPU VRAM usage
-        for name, param in self.model.named_parameters():
-            train_this = (
-                name.startswith("transformer.decoder")
-                or name.startswith("segmentation_head.mask_predictor")
-                or name.startswith("segmentation_head.instance_seg_head")
-                or name.startswith("segmentation_head.cross_attend_prompt")
-                or name.startswith("segmentation_head.cross_attn_norm")
-            )
-            param.requires_grad = train_this
+        # for name, param in self.model.named_parameters():
+        #     train_this = (
+        #         name.startswith("transformer.decoder")
+        #         or name.startswith("segmentation_head.mask_predictor")
+        #         or name.startswith("segmentation_head.instance_seg_head")
+        #         or name.startswith("segmentation_head.cross_attend_prompt")
+        #         or name.startswith("segmentation_head.cross_attn_norm")
+        #     )
+        #     param.requires_grad = train_this
 
         print_model_summary(self.model)
 

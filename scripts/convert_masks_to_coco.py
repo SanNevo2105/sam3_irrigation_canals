@@ -58,7 +58,7 @@ import argparse
 import json
 import os
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from PIL import Image
@@ -87,6 +87,12 @@ def mask_to_rle(mask: np.ndarray) -> Dict:
 
 
 def mask_to_bbox(mask: np.ndarray) -> List[float]:
+    """Return the tight [x, y, w, h] bounding box over all foreground pixels.
+
+    Uses the inclusive-pixel convention: a mask whose rightmost foreground
+    pixel is at column c has bbox width = c - x_min + 1, which equals the
+    number of columns covered (inclusive).  This matches the COCO standard.
+    """
     rows = np.any(mask, axis=1)
     cols = np.any(mask, axis=0)
     if not rows.any() or not cols.any():
@@ -178,6 +184,7 @@ def process_split(
 
     images: List[Dict] = []
     annotations: List[Dict] = []
+    ann_id_counter = 0  # global annotation id (unique across all images)
 
     for img_id, (img_path, mask_path) in enumerate(tqdm(pairs, desc=f"  Encoding {split_name}")):
         with Image.open(img_path) as im:
@@ -194,19 +201,20 @@ def process_split(
         # Skip images whose mask is completely empty
         if mask.sum() == 0:
             continue
+
         rle  = mask_to_rle(mask)
         bbox = mask_to_bbox(mask)
         area = float(np.sum(mask))
-
         annotations.append({
-            "id": img_id,           # one annotation per image
+            "id": ann_id_counter,
             "image_id": img_id,
             "category_id": category_id,
-            "segmentation": rle,    # COCO RLE – ready for pycocotools
+            "segmentation": rle,
             "area": area,
-            "bbox": bbox,           # [x, y, w, h]
+            "bbox": bbox,       # [x, y, w, h]
             "iscrowd": 0,
         })
+        ann_id_counter += 1
 
     return images, annotations
 
