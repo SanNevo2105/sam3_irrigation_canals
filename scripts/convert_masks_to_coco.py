@@ -130,15 +130,20 @@ def _stem_key(path: Path) -> str:
     if "_" in stem:
         prefix, rest = stem.split("_", 1)
         if prefix.isalpha():
+            # print("rest", rest)
             return rest
+        elif rest.isalpha():
+            # print("prefix", prefix)
+            return prefix
+        # print("stem", stem)
     return stem
 
 
 def build_image_mask_pairs(
     images_dir: Path,
     masks_dir: Path,
-    image_exts: Tuple[str, ...] = ("png",),
-    mask_exts: Tuple[str, ...]  = ("png",),
+    image_exts: Tuple[str, ...] = ("png","jpg", "jpeg"),
+    mask_exts: Tuple[str, ...]  = ("png","jpg", "jpeg"),
 ) -> List[Tuple[Path, Path]]:
     """
     Match images to masks by their full filename stem.
@@ -175,8 +180,8 @@ def process_split(
     images_dir: Path,
     masks_dir: Path,
     category_id: int,
-    image_exts: Tuple[str, ...] = ("png",),
-    mask_exts: Tuple[str, ...]  = ("png",),
+    image_exts: Tuple[str, ...] = ("png","jpg", "jpeg"),
+    mask_exts: Tuple[str, ...]  = ("png","jpg", "jpeg"),
 ) -> Tuple[List[Dict], List[Dict]]:
     """Build COCO images and annotations lists for one split."""
     pairs = build_image_mask_pairs(images_dir, masks_dir, image_exts, mask_exts)

@@ -388,6 +388,22 @@ class GradientClipper:
         if self.max_norm is None:
             return  # no-op
 
+        # Guard: if any gradient is NaN, clip_grad_norm_ will compute
+        # total_norm=NaN → clip_coef=NaN → every gradient becomes NaN,
+        # which scaler.step() then passes to optimizer.step() (GradScaler
+        # only detects inf, not nan).  Zero out all grads here instead so
+        # the step is safely skipped by the optimizer.
+        for p in model.parameters():
+            if p.grad is not None and not torch.isfinite(p.grad).all():
+                logging.warning(
+                    "[GradientClipper] NaN/Inf detected in gradients — "
+                    "zeroing all grads to skip this optimizer step."
+                )
+                for q in model.parameters():
+                    if q.grad is not None:
+                        q.grad.zero_()
+                return
+
         nn.utils.clip_grad_norm_(
             model.parameters(), max_norm=self.max_norm, norm_type=self.norm_type
         )
