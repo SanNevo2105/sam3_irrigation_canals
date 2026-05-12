@@ -4,10 +4,27 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 
 
-LOG_DIR = Path("experiments/road/logs")
+# LOG_DIR = Path("experiments/road/logs")
+# TRAIN_PATH = LOG_DIR / "train_stats.json"
+# VAL_PATH = LOG_DIR / "val_stats.json"
+
+import argparse
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    "--log-dir",
+    type=Path,
+    default=Path("experiments/road/logs"),
+    help="Directory containing train_stats.json and val_stats.json",
+)
+args = parser.parse_args()
+
+LOG_DIR = args.log_dir
 TRAIN_PATH = LOG_DIR / "train_stats.json"
 VAL_PATH = LOG_DIR / "val_stats.json"
 
+print("Using log dir:", LOG_DIR)
 
 def load_jsonl(path: Path):
     rows = []

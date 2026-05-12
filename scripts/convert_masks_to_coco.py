@@ -47,6 +47,19 @@ Usage – road TIFF layout:
         --mask_dir_template {split}_labels \\
         --output_dir /path/to/coco_output
 
+Usage – per-connected-component mode (road_global / network masks):
+    python convert_masks_to_coco.py \\
+        --dataset_path sam3/train/data/road_global \\
+        --category_name road \\
+        --per-component \\
+        --min-component-area 100
+
+    Each binary mask is split into individual connected components via
+    scipy.ndimage.label.  Components with fewer than --min-component-area
+    pixels are discarded as noise.  One COCO annotation (RLE mask + tight
+    bounding box) is emitted per surviving component, giving the SAM3 box
+    head spatially diverse targets instead of a single near-full-image box.
+
 If --output_dir is given, each split's JSON is written to
     <output_dir>/<split>/_annotations.coco.json
 and the directory is created automatically if it does not exist.
@@ -102,6 +115,26 @@ def mask_to_bbox(mask: np.ndarray) -> List[float]:
     y_min, y_max = int(y_idx[0]), int(y_idx[-1])
     x_min, x_max = int(x_idx[0]), int(x_idx[-1])
     return [float(x_min), float(y_min), float(x_max - x_min + 1), float(y_max - y_min + 1)]
+
+
+def mask_to_components(mask: np.ndarray, min_area: int = 100) -> List[np.ndarray]:
+    """Label connected components in a binary mask and return a list of
+    per-component binary uint8 masks, keeping only those whose pixel area
+    is >= *min_area*.
+
+    Uses ``scipy.ndimage.label`` with default 4-connectivity (conservative:
+    diagonally-adjacent pixels are treated as separate components, which is
+    appropriate for road networks).  Returns an empty list when the mask is
+    entirely background or no component survives the area filter.
+    """
+    from scipy.ndimage import label as nd_label  # lazy import – not always needed
+    labeled, n_components = nd_label(mask)
+    components: List[np.ndarray] = []
+    for comp_id in range(1, n_components + 1):
+        comp_mask = (labeled == comp_id).astype(np.uint8)
+        if int(comp_mask.sum()) >= min_area:
+            components.append(comp_mask)
+    return components
 
 
 # ---------------------------------------------------------------------------
@@ -182,8 +215,18 @@ def process_split(
     category_id: int,
     image_exts: Tuple[str, ...] = ("png","jpg", "jpeg"),
     mask_exts: Tuple[str, ...]  = ("png","jpg", "jpeg"),
+    per_component: bool = False,
+    min_component_area: int = 100,
 ) -> Tuple[List[Dict], List[Dict]]:
-    """Build COCO images and annotations lists for one split."""
+    """Build COCO images and annotations lists for one split.
+
+    When *per_component* is True each binary mask is decomposed into its
+    connected components (via :func:`mask_to_components`) and one annotation
+    is emitted per surviving component.  Components smaller than
+    *min_component_area* pixels are discarded.  When *per_component* is False
+    (default) the original behaviour is preserved: one annotation per image
+    covering the whole binary mask.
+    """
     pairs = build_image_mask_pairs(images_dir, masks_dir, image_exts, mask_exts)
     print(f"  {split_name}: {len(pairs)} matched pairs found.")
 
@@ -207,19 +250,26 @@ def process_split(
         if mask.sum() == 0:
             continue
 
-        rle  = mask_to_rle(mask)
-        bbox = mask_to_bbox(mask)
-        area = float(np.sum(mask))
-        annotations.append({
-            "id": ann_id_counter,
-            "image_id": img_id,
-            "category_id": category_id,
-            "segmentation": rle,
-            "area": area,
-            "bbox": bbox,       # [x, y, w, h]
-            "iscrowd": 0,
-        })
-        ann_id_counter += 1
+        # Decompose into connected components or treat the whole mask as one.
+        if per_component:
+            component_masks = mask_to_components(mask, min_area=min_component_area)
+        else:
+            component_masks = [mask]
+
+        for comp_mask in component_masks:
+            rle  = mask_to_rle(comp_mask)
+            bbox = mask_to_bbox(comp_mask)
+            area = float(np.sum(comp_mask))
+            annotations.append({
+                "id": ann_id_counter,
+                "image_id": img_id,
+                "category_id": category_id,
+                "segmentation": rle,
+                "area": area,
+                "bbox": bbox,       # [x, y, w, h]
+                "iscrowd": 0,
+            })
+            ann_id_counter += 1
 
     return images, annotations
 
@@ -299,6 +349,29 @@ def main():
             "(original default behaviour)."
         ),
     )
+    parser.add_argument(
+        "--per-component",
+        action="store_true",
+        default=False,
+        help=(
+            "Split each binary mask into connected components and emit one "
+            "COCO annotation per component.  Useful for road/network masks "
+            "where a single mask covers the entire road network.  Components "
+            "smaller than --min-component-area pixels are discarded."
+        ),
+    )
+    parser.add_argument(
+        "--min-component-area",
+        type=int,
+        default=100,
+        metavar="PIXELS",
+        help=(
+            "Minimum pixel area for a connected component to be included as "
+            "an annotation.  Components smaller than this threshold are "
+            "discarded as noise.  Only used when --per-component is set "
+            "(default: 100)."
+        ),
+    )
     args = parser.parse_args()
 
     root        = Path(args.dataset_path)
@@ -337,6 +410,8 @@ def main():
             category_id=1,
             image_exts=image_exts,
             mask_exts=mask_exts,
+            per_component=args.per_component,
+            min_component_area=args.min_component_area,
         )
 
         coco_dict = {

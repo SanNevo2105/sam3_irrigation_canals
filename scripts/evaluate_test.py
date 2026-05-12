@@ -149,7 +149,7 @@ class LandslideTestDataset(Dataset):
 
         images = {
             _numeric_id(p): p
-            for p in sorted(image_dir.glob("*.png"))
+            for p in sorted(list(image_dir.glob("*.png")) + list(image_dir.glob("*.jpg")))
             if _numeric_id(p) is not None
         }
         masks = {
