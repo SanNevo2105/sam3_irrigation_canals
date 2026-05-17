@@ -111,7 +111,7 @@ sam3_irrigation_canals/          ← repository root (run all commands from here
 │       │   └── irrigation_canal/  ← YOUR DATA GOES HERE (see Step 1)
 │       └── configs/
 │           └── irrigation/
-│               └── irrigation_finetune.yaml  ← training config (Step 3)
+│               └── irrigation_canal_finetune.yaml  ← training config (Step 3)
 ├── train_irrigation.slurm         ← SLURM job template (cluster users)
 └── experiments/
     └── irrigation/                ← checkpoints & logs (created automatically)
@@ -128,9 +128,9 @@ Populate sam3/train/data/irrigation_canal/ with images + masks
 scripts/convert_masks_to_coco.py   →  train/, val/, test/ _annotations.coco.json
          │
          ▼
-(optional) review sam3/train/configs/irrigation/irrigation_finetune.yaml
+(optional) review sam3/train/configs/irrigation_canal/irrigation_canal_finetune.yaml
          │
-         ├─── Local ──► python sam3/train/train.py -c configs/irrigation/irrigation_finetune
+         ├─── Local ──► python sam3/train/train.py -c configs/irrigation_canal/irrigation_canal_finetune
          └─── SLURM ──► sbatch train_irrigation.slurm
                               │
                               ▼
@@ -223,7 +223,7 @@ python scripts/convert_masks_to_coco.py \
 
 ## Step 3 – Review the Training Config
 
-The training config is at [`sam3/train/configs/irrigation/irrigation_finetune.yaml`](sam3/train/configs/irrigation/irrigation_finetune.yaml).
+The training config is at [`sam3/train/configs/irrigation_canal/irrigation_canal_finetune.yaml`](sam3/train/configs/irrigation_canal/irrigation_canal_finetune.yaml).
 
 All `paths:` values already point to the `sam3/train/data/irrigation_canal/` data folder relative to the repository root — no edits are needed unless you stored your data elsewhere.
 
@@ -248,7 +248,7 @@ Run all commands from the **repository root** with your virtual environment acti
 
 ```bash
 python sam3/train/train.py \
-    -c configs/irrigation/irrigation_finetune
+    -c configs/irrigation_canal/irrigation_canal_finetune
 ```
 
 > The `-c` / `--config` argument is a config name relative to `sam3/train/` — no `.yaml` extension, no `sam3/train/` prefix.
@@ -257,7 +257,7 @@ python sam3/train/train.py \
 
 ```bash
 python sam3/train/train.py \
-    -c configs/irrigation/irrigation_finetune \
+    -c configs/irrigation_canal/irrigation_canal_finetune \
     --num-gpus 4
 ```
 
@@ -278,7 +278,7 @@ Or pass SLURM settings directly to the training script (set `submitit.use_cluste
 
 ```bash
 python sam3/train/train.py \
-    -c configs/irrigation/irrigation_finetune \
+    -c configs/irrigation_canal/irrigation_canal_finetune \
     --use-cluster 1 \
     --partition <your_partition> \
     --account <your_account> \
@@ -465,7 +465,7 @@ After a successful download the weights are cached at:
 ~/.cache/huggingface/hub/models--facebook--sam3/snapshots/<hash>/sam3.pt
 ```
 
-To skip re-downloading, note that cached path and set these two fields in [`sam3/train/configs/irrigation/irrigation_finetune.yaml`](sam3/train/configs/irrigation/irrigation_finetune.yaml):
+To skip re-downloading, note that cached path and set these two fields in [`sam3/train/configs/irrigation_canal/irrigation_canal_finetune.yaml`](sam3/train/configs/irrigation_canal/irrigation_canal_finetune.yaml):
 
 ```yaml
 paths:
