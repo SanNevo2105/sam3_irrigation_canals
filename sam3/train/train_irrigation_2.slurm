@@ -10,6 +10,8 @@
 
 set -e
 
+module load python39
+
 echo "Starting job on $(hostname)"
 echo "Time: $(date)"
 
@@ -23,8 +25,7 @@ cd "$REPO_DIR"
 mkdir -p logs
 
 echo "Python binary: $PYTHON"
-ls -l "$PYTHON"
-readlink -f "$PYTHON" || true
+ldd "$PYTHON" || true
 
 "$PYTHON" --version
 "$PYTHON" -c "import sys; print('sys.executable:', sys.executable); print('sys.version:', sys.version)"
