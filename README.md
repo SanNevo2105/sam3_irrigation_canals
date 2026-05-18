@@ -1,477 +1,352 @@
-# SAM3 – Irrigation Canal Fine-tuning
+# SAM3 Irrigation Canal Fine-tuning
 
-Fine-tune [SAM 3 (Segment Anything Model 3)](https://ai.meta.com/sam3) on satellite imagery to perform **semantic segmentation of irrigation canals** using binary masks.
+Fine-tune SAM3 on satellite imagery for **binary irrigation-canal segmentation**. The pipeline takes paired images and binary masks, converts them to COCO annotations for SAM3 training, then evaluates the trained checkpoint with segmentation metrics such as IoU and pixel accuracy.
 
----
+## What this repo does
 
-## Table of Contents
+- Converts image/mask datasets into COCO JSON.
+- Fine-tunes SAM3 using box + mask supervision.
+- Supports local or Slurm-based training.
+- Evaluates checkpoints on binary segmentation metrics:
+  - mean IoU
+  - global IoU
+  - pixel accuracy
+  - approximate BCE loss
+- Provides utilities for splitting layered RGBA TIFF chips into RGB images and binary masks.
 
-1. [Overview](#overview)
-2. [Prerequisites](#prerequisites)
-3. [Environment Setup](#environment-setup)
-4. [Project Structure](#project-structure)
-5. [Workflow at a Glance](#workflow-at-a-glance)
-6. [Step 1 – Populate the Dataset Folder](#step-1--populate-the-dataset-folder)
-7. [Step 2 – Convert Masks to COCO JSON](#step-2--convert-masks-to-coco-json)
-8. [Step 3 – Review the Training Config](#step-3--review-the-training-config)
-9. [Step 4 – Run Training](#step-4--run-training)
-10. [Step 5 – Evaluate on the Test Set](#step-5--evaluate-on-the-test-set)
-11. [Step 6 – Plot Training Logs](#step-6--plot-training-logs)
-12. [Output Directory Layout](#output-directory-layout)
-13. [Troubleshooting](#troubleshooting)
+## Recommended environment setup
 
----
-
-## Overview
-
-This repository adapts SAM 3 for binary semantic segmentation of irrigation canals in satellite imagery. The pipeline converts paired (image, binary-mask) datasets into COCO JSON format, fine-tunes SAM 3's detection head with box + mask supervision, and evaluates the result with standard IoU / pixel-accuracy metrics.
-
----
-
-## Prerequisites
-
-| Requirement | Minimum version | Notes |
-|---|---|---|
-| Python | 3.10 | 3.11 / 3.12 also supported |
-| CUDA | 11.8 | 12.x recommended for H100 |
-| GPU VRAM | 40 GB | A100 / H100 80 GB tested |
-| Disk space | ~10 GB | For SAM 3 weights + dataset |
-
-> **Note – HuggingFace download:** The first training run downloads the SAM 3 weights (~5 GB) from `facebook/sam3` automatically. After the first run the weights are cached at `~/.cache/huggingface/hub/models--facebook--sam3/`. You can set `checkpoint_path` in the config to that cached `.pt` file to skip re-downloading on future runs.
-
----
-
-## Environment Setup
-
-### 1. Clone the repository
+Clone the repository:
 
 ```bash
 git clone https://github.com/SanNevo2105/sam3_irrigation_canals.git
 cd sam3_irrigation_canals
 ```
 
-All subsequent commands are run from **inside this directory** (the repository root).
-
-### 2. Create and activate a virtual environment
+Use the provided setup script:
 
 ```bash
-python -m venv sam3_env
-source sam3_env/bin/activate       # Linux / macOS
-# sam3_env\Scripts\activate.bat   # Windows
+bash scripts/setup_venv.sh sam3_env
+source sam3_env/bin/activate
 ```
 
-Or with conda:
+The setup script should create the virtual environment with copied Python binaries, not symlinked system Python. This matters on clusters where login nodes and GPU compute nodes may have different `/usr/bin/python3` versions.
+
+After setup, verify:
 
 ```bash
-conda create -n sam3_env python=3.11 -y
-conda activate sam3_env
+which python
+python --version
+python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+python -c "import submitit; print(submitit.__version__)"
 ```
 
-### 3. Install PyTorch with CUDA support
+Expected behavior:
 
-Follow the [official PyTorch install page](https://pytorch.org/get-started/locally/) for your CUDA version. Example for CUDA 12.1:
+```text
+.../sam3_env/bin/python
+CUDA available: True
+```
+
+If you are creating the venv manually on a cluster, use:
 
 ```bash
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+python3.9 -m venv --copies sam3_env
+source sam3_env/bin/activate
+
+python -m pip install --upgrade pip
+python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+python -m pip install -e ".[train]"
 ```
 
-### 4. Install the SAM 3 package with training dependencies
+Do not create a symlinked venv with plain `python -m venv sam3_env` on clusters where compute nodes may use a different system Python.
 
-```bash
-pip install -e ".[train]"
-```
+## Dataset layout
 
-This installs the `sam3` package in editable mode together with all training dependencies declared in [`pyproject.toml`](pyproject.toml):
+Put the dataset under:
 
-```
-hydra-core  submitit  tensorboard  scipy  torchmetrics
-fvcore  fairscale  scikit-image  scikit-learn  zstandard
-```
-
-### 5. Install script dependencies
-
-```bash
-pip install pycocotools matplotlib pillow tqdm scipy
-```
-
----
-
-## Project Structure
-
-```
-sam3_irrigation_canals/          ← repository root (run all commands from here)
-├── scripts/
-│   ├── convert_masks_to_coco.py   ← Step 2: dataset conversion
-│   ├── evaluate_test.py           ← Step 5: test-set evaluation
-│   └── plot_logs.py               ← Step 6: training curve plots
-├── sam3/
-│   └── train/
-│       ├── train.py               ← Step 4: main training entry point
-│       ├── data/
-│       │   └── irrigation_canal/  ← YOUR DATA GOES HERE (see Step 1)
-│       └── configs/
-│           └── irrigation/
-│               └── irrigation_canal_finetune.yaml  ← training config (Step 3)
-├── train_irrigation.slurm         ← SLURM job template (cluster users)
-└── experiments/
-    └── irrigation/                ← checkpoints & logs (created automatically)
-```
-
----
-
-## Workflow at a Glance
-
-```
-Populate sam3/train/data/irrigation_canal/ with images + masks
-         │
-         ▼
-scripts/convert_masks_to_coco.py   →  train/, val/, test/ _annotations.coco.json
-         │
-         ▼
-(optional) review sam3/train/configs/irrigation_canal/irrigation_canal_finetune.yaml
-         │
-         ├─── Local ──► python sam3/train/train.py -c configs/irrigation_canal/irrigation_canal_finetune
-         └─── SLURM ──► sbatch train_irrigation.slurm
-                              │
-                              ▼
-                  experiments/irrigation/checkpoints/checkpoint.pt
-                              │
-               ┌──────────────┴──────────────────┐
-               ▼                                  ▼
-  scripts/evaluate_test.py             scripts/plot_logs.py
-  (IoU, pixel accuracy, PNG)           (loss & AP curves)
-```
-
----
-
-## Step 1 – Populate the Dataset Folder
-
-Place your satellite images and binary masks inside [`sam3/train/data/irrigation_canal/`](sam3/train/data/irrigation_canal/) following this layout:
-
-```
+```text
 sam3/train/data/irrigation_canal/
 ├── train/
-│   ├── images/     ← image_001.png, image_002.png, …
-│   └── masks/      ← mask_001.png,  mask_002.png,  …
+│   ├── images/
+│   └── masks/
 ├── val/
 │   ├── images/
 │   └── masks/
-└── test/            (optional — skip if you have no held-out test split)
+└── test/
     ├── images/
     └── masks/
 ```
 
-**Mask format:** Single-channel (grayscale) PNG where pixel value `0` = background and any value `> 0` = irrigation canal.
+Masks should be single-channel binary images:
 
-**Filename matching:** Images and masks are paired by their shared numeric suffix:
-`image_1001.png` ↔ `mask_1001.png` → both resolve to key `1001`.
+```text
+0   = background
+> 0 = irrigation canal
+```
 
----
+Images and masks must share the same stem:
 
-## Step 2 – Convert Masks to COCO JSON
+```text
+images/Canal_ML_Chip_0000.png
+masks/Canal_ML_Chip_0000.png
+```
 
-Run [`scripts/convert_masks_to_coco.py`](scripts/convert_masks_to_coco.py) from the repository root to generate the COCO annotation files the trainer requires.
+or:
 
-### Standard mode (one annotation per image)
+```text
+images/Canal_ML_Chip_0000.jpg
+masks/Canal_ML_Chip_0000.png
+```
+
+## Optional: split layered TIFF chips
+
+If your raw `.tif` files contain RGB image channels plus a final binary-mask channel, split them first:
+
+```bash
+python scripts/split_tif_rgba_masks_fast.py \
+  --input-dir sam3/train/data/irrigation_layered \
+  --output-dir sam3/train/data/irrigation_canal/train \
+  --workers 4 \
+  --image-format png \
+  --png-compress-level 1
+```
+
+For faster/smaller RGB images, use JPEG for images while keeping masks as PNG:
+
+```bash
+python scripts/split_tif_rgba_masks_fast.py \
+  --input-dir sam3/train/data/irrigation_layered \
+  --output-dir sam3/train/data/irrigation_canal/train \
+  --workers 4 \
+  --image-format jpg \
+  --jpg-quality 95
+```
+
+Masks are always saved as PNG.
+
+## Convert masks to COCO
+
+SAM3 training expects COCO-style annotations. Convert each split with:
 
 ```bash
 python scripts/convert_masks_to_coco.py \
-    --dataset_path sam3/train/data/irrigation_canal \
-    --category_name "irrigation canal" \
-    --splits train val test
+  --dataset_path sam3/train/data/irrigation_canal \
+  --category_name "irrigation canal" \
+  --image_extensions jpg png \
+  --mask_extensions png \
+  --per-component \
+  --min-component-area 100
 ```
 
-This writes `_annotations.coco.json` inside each split folder:
+This writes:
 
+```text
+sam3/train/data/irrigation_canal/train/_annotations.coco.json
+sam3/train/data/irrigation_canal/val/_annotations.coco.json
+sam3/train/data/irrigation_canal/test/_annotations.coco.json
 ```
-sam3/train/data/irrigation_canal/
-├── train/_annotations.coco.json
-├── val/_annotations.coco.json
-└── test/_annotations.coco.json
+
+Use `--per-component` when the canal mask contains many disconnected canal segments. It produces one annotation per connected component, which gives SAM3 more localized box/mask targets.
+
+## Training
+
+The main config is:
+
+```text
+sam3/train/configs/irrigation_canal/irrigation_canal_finetune.yaml
 ```
 
-### Per-connected-component mode (recommended for canal networks)
-
-Irrigation canals form spatially sparse networks. `--per-component` decomposes each mask into individual connected canal segments and emits one COCO annotation per segment, giving SAM 3's box head spatially diverse targets:
+Run from the repository root:
 
 ```bash
-python scripts/convert_masks_to_coco.py \
-    --dataset_path sam3/train/data/irrigation_canal \
-    --category_name "irrigation canal" \
-    --per-component \
-    --min-component-area 100
+python -m sam3.train.train \
+  --config configs/irrigation_canal/irrigation_canal_finetune
 ```
 
-`--min-component-area 100` discards noise components smaller than 100 pixels.
+The config name is relative to `sam3/train/`, so do not include `sam3/train/` or `.yaml`.
 
-### All CLI options
+Important config fields:
 
-| Argument | Default | Description |
-|---|---|---|
-| `--dataset_path` | *(required)* | Root directory of the dataset |
-| `--category_name` | `object` | Class name written into the COCO `categories` list |
-| `--splits` | `train val test` | Which splits to process |
-| `--image_extensions` | `png` | File extension(s) for images (no leading dot) |
-| `--mask_extensions` | `png` | File extension(s) for masks (no leading dot) |
-| `--image_subdir` | `images` | Sub-folder inside each split holding the images; pass `.` if images live directly in the split folder |
-| `--mask_dir_template` | `{split}/masks` | Template for the mask directory; `{split}` is replaced by the current split name |
-| `--output_dir` | *(writes next to split folder)* | Separate directory for COCO JSON output |
-| `--per-component` | `False` | Decompose each mask into connected components |
-| `--min-component-area` | `100` | Minimum component size in pixels (used with `--per-component`) |
+```yaml
+scratch:
+  train_batch_size: 4
+  val_batch_size: 2
+  lr_scale: 0.02
 
----
-
-## Step 3 – Review the Training Config
-
-The training config is at [`sam3/train/configs/irrigation_canal/irrigation_canal_finetune.yaml`](sam3/train/configs/irrigation_canal/irrigation_canal_finetune.yaml).
-
-All `paths:` values already point to the `sam3/train/data/irrigation_canal/` data folder relative to the repository root — no edits are needed unless you stored your data elsewhere.
-
-Key tunable parameters:
-
-| Parameter | Location in YAML | Default | When to change |
-|---|---|---|---|
-| `max_epochs` | `trainer.max_epochs` | `20` | Increase for larger datasets |
-| `train_batch_size` | `scratch.train_batch_size` | `4` | Reduce if GPU runs out of memory |
-| `lr_scale` | `scratch.lr_scale` | `0.02` | Lower if loss diverges or NaNs appear |
-| `num_train_workers` | `scratch.num_train_workers` | `4` | Set `0` when debugging |
-| `gpus_per_node` | `launcher.gpus_per_node` | `1` | Increase for multi-GPU training |
-| `use_cluster` | `submitit.use_cluster` | `False` | Set `True` when submitting to SLURM |
-
----
-
-## Step 4 – Run Training
-
-Run all commands from the **repository root** with your virtual environment active.
-
-### Local (single GPU)
-
-```bash
-python sam3/train/train.py \
-    -c configs/irrigation_canal/irrigation_canal_finetune
+trainer:
+  max_epochs: 20
 ```
 
-> The `-c` / `--config` argument is a config name relative to `sam3/train/` — no `.yaml` extension, no `sam3/train/` prefix.
+Reduce `train_batch_size` if you hit CUDA OOM. Reduce `lr_scale` if training becomes unstable.
 
-### Local (multi-GPU, single node)
+## Slurm training
+
+Edit the user settings in `train_irrigation.slurm`, especially the Python path:
 
 ```bash
-python sam3/train/train.py \
-    -c configs/irrigation_canal/irrigation_canal_finetune \
-    --num-gpus 4
+PYTHON="/path/to/sam3_env/bin/python"
+REPO_DIR="/path/to/sam3_irrigation_canals"
+CONFIG_NAME="configs/irrigation_canal/irrigation_canal_finetune"
 ```
 
-### SLURM cluster
+Submit from the repository root:
 
 ```bash
-# 1. Edit the USER-marked lines at the top of train_irrigation.slurm
-nano train_irrigation.slurm
-
-# 2. Create the logs directory if it does not exist
 mkdir -p logs
-
-# 3. Submit
 sbatch train_irrigation.slurm
 ```
 
-Or pass SLURM settings directly to the training script (set `submitit.use_cluster: True` in the config first):
+The Slurm script should call the venv Python directly:
 
 ```bash
-python sam3/train/train.py \
-    -c configs/irrigation_canal/irrigation_canal_finetune \
-    --use-cluster 1 \
-    --partition <your_partition> \
-    --account <your_account> \
-    --num-gpus 1
+"$PYTHON" -m sam3.train.train \
+  --config "$CONFIG_NAME"
 ```
 
-### All training CLI arguments
+This is more reliable than relying on `source sam3_env/bin/activate` inside batch jobs.
 
-| Argument | Default | Description |
-|---|---|---|
-| `-c / --config` | *(required)* | Config name relative to `sam3/train/` (no `.yaml`) |
-| `--use-cluster` | *(from config)* | `0` = local, `1` = submit via SLURM |
-| `--partition` | *(from config)* | SLURM partition name |
-| `--account` | *(from config)* | SLURM account |
-| `--qos` | *(from config)* | SLURM Quality of Service |
-| `--num-gpus` | *(from config)* | GPUs per node |
-| `--num-nodes` | *(from config)* | Number of nodes |
+## Evaluation
 
----
-
-## Step 5 – Evaluate on the Test Set
-
-[`scripts/evaluate_test.py`](scripts/evaluate_test.py) loads a fine-tuned checkpoint (or fresh HuggingFace weights) and evaluates on a directory of paired images and binary masks.
-
-It reports four metrics and saves a side-by-side prediction visualisation:
-
-| Metric | Description |
-|---|---|
-| `test_loss` | Approximate binary cross-entropy between the confidence probability map and the GT mask |
-| `test_mean_iou` | Per-image foreground IoU averaged over all test images |
-| `test_global_iou` | Globally accumulated IoU across the entire test set |
-| `test_pixel_accuracy` | Fraction of pixels correctly classified |
-
-### Evaluate with your fine-tuned checkpoint
+Evaluate a checkpoint on a split:
 
 ```bash
 python scripts/evaluate_test.py \
-    --dataset-root sam3/train/data/irrigation_canal \
-    --split test \
-    --text-prompt "irrigation canal" \
-    --checkpoint-path experiments/irrigation/checkpoints/checkpoint.pt \
-    --num-vis 10 \
-    --save-path canal_predictions.png
+  --dataset-root sam3/train/data/irrigation_canal \
+  --split test \
+  --text-prompt "irrigation canal" \
+  --checkpoint-path experiments/irrigation/checkpoints/checkpoint.pt \
+  --num-vis 10 \
+  --save-path canal_predictions.png
 ```
 
-### Evaluate with fresh HuggingFace weights (no local checkpoint needed)
+The evaluator reports:
+
+```text
+test_loss
+test_mean_iou
+test_global_iou
+test_pixel_accuracy
+```
+
+For canal segmentation, **IoU is the main metric to emphasize**. Pixel accuracy can be misleading because most pixels are background.
+
+Use fresh SAM3 weights instead of a fine-tuned checkpoint:
 
 ```bash
 python scripts/evaluate_test.py \
-    --dataset-root sam3/train/data/irrigation_canal \
-    --split test \
-    --text-prompt "irrigation canal" \
-    --load-from-hf
+  --dataset-root sam3/train/data/irrigation_canal \
+  --split test \
+  --text-prompt "irrigation canal" \
+  --load-from-hf
 ```
 
-### Direct image / mask directory override
-
-```bash
-python scripts/evaluate_test.py \
-    --image-dir sam3/train/data/irrigation_canal/test/images \
-    --mask-dir  sam3/train/data/irrigation_canal/test/masks \
-    --text-prompt "irrigation canal" \
-    --checkpoint-path experiments/irrigation/checkpoints/checkpoint.pt
-```
-
-### All CLI options
-
-| Argument | Default | Description |
-|---|---|---|
-| `--dataset-root` | `assets/landslide_dataset` | Root dataset folder (`<root>/<split>/images/` and `masks/`) |
-| `--split` | `test` | Sub-folder name, e.g. `test` or `val` |
-| `--image-dir` | *(from dataset-root)* | Direct path to image folder (overrides `--dataset-root`/`--split`) |
-| `--mask-dir` | *(from dataset-root)* | Direct path to mask folder (overrides `--dataset-root`/`--split`) |
-| `--text-prompt` | `landslide` | Text query string sent to SAM 3 for every image — use `"irrigation canal"` |
-| `--bpe-path` | *(auto-resolved)* | Path to BPE vocabulary file |
-| `--checkpoint-path` | `experiments/landslide/checkpoints/checkpoint.pt` | Path to a fine-tuned trainer checkpoint |
-| `--load-from-hf` | `False` | Load pre-trained weights from HuggingFace instead of a local checkpoint |
-| `--num-vis` | `10` | Number of images to include in the prediction visualisation |
-| `--save-path` | `test_predictions.png` | Output path for the prediction visualisation PNG |
-
----
-
-## Step 6 – Plot Training Logs
-
-[`scripts/plot_logs.py`](scripts/plot_logs.py) reads the `train_stats.json` and `val_stats.json` files produced by the trainer and saves two PNG plots:
-
-- **`train_loss_runs.png`** – training loss by epoch (multiple resumed runs overlaid)
-- **`val_ap_runs.png`** – validation AP by epoch
+## Plot training logs
 
 ```bash
 python scripts/plot_logs.py \
-    --log-dir experiments/irrigation/logs
+  --log-dir experiments/irrigation/logs
 ```
 
-| Argument | Default | Description |
-|---|---|---|
-| `--log-dir` | `experiments/road/logs` | Directory containing `train_stats.json` and `val_stats.json` |
+This reads:
 
-The log directory is always at `<experiment_log_dir>/logs/` — for the default config that is `experiments/irrigation/logs/`.
-
----
-
-## Output Directory Layout
-
-After a successful training run:
-
+```text
+experiments/irrigation/logs/train_stats.json
+experiments/irrigation/logs/val_stats.json
 ```
+
+and saves loss/validation curves.
+
+## Outputs
+
+A training run writes to:
+
+```text
 experiments/irrigation/
-├── config.yaml              ← original config used for this run
-├── config_resolved.yaml     ← config with all Hydra variables expanded
+├── config.yaml
+├── config_resolved.yaml
 ├── checkpoints/
-│   ├── checkpoint.pt        ← latest checkpoint (overwritten each epoch)
-│   └── checkpoint_ep*.pt    ← per-epoch checkpoints
+│   ├── checkpoint.pt
+│   ├── checkpoint_1.pt
+│   ├── checkpoint_2.pt
+│   └── ...
 ├── logs/
-│   ├── train_stats.json     ← one JSON line per training step (input to plot_logs.py)
-│   ├── val_stats.json       ← one JSON line per validation epoch
-│   └── log.txt              ← human-readable log
-├── tensorboard/
-│   └── events.out.tfevents.*
-├── dumps/
-│   └── irrigation/          ← raw COCO prediction files for offline eval
-└── submitit_logs/           ← SLURM job logs (cluster only)
+│   ├── train_stats.json
+│   ├── val_stats.json
+│   └── log.txt
+└── tensorboard/
 ```
 
-Monitor live training with TensorBoard:
-
-```bash
-tensorboard --logdir experiments/irrigation/tensorboard
-```
-
----
+Use the checkpoint with the best validation metric, not necessarily the final checkpoint.
 
 ## Troubleshooting
 
-### `FileNotFoundError: Fine-tuned checkpoint not found`
+### Slurm cannot find `torch` or `submitit`
 
-The checkpoint path in `evaluate_test.py` defaults to a landslide path. Always pass `--checkpoint-path` explicitly:
+If the login node works but the Slurm job fails with:
 
-```bash
-python scripts/evaluate_test.py \
-    --checkpoint-path experiments/irrigation/checkpoints/checkpoint.pt …
+```text
+ModuleNotFoundError: No module named 'torch'
 ```
 
-### CUDA out of memory during training
+then the job is probably using the wrong Python. Check whether your venv points to system Python:
 
-Reduce `train_batch_size` in the config (e.g. from `4` to `2`). Increase `gradient_accumulation_steps` proportionally to maintain the effective batch size:
+```bash
+ls -l sam3_env/bin/python*
+readlink -f sam3_env/bin/python
+cat sam3_env/pyvenv.cfg
+```
+
+Fix by recreating the environment with copied binaries:
+
+```bash
+rm -rf sam3_env
+python3.9 -m venv --copies sam3_env
+source sam3_env/bin/activate
+python -m pip install --upgrade pip
+python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+python -m pip install -e ".[train]"
+```
+
+Then make the Slurm script use:
+
+```bash
+PYTHON="/path/to/sam3_env/bin/python"
+```
+
+### CUDA out of memory
+
+Reduce batch size:
 
 ```yaml
 scratch:
   train_batch_size: 2
-  gradient_accumulation_steps: 2
 ```
 
-### NaN / loss explosion
+### NaN or unstable training
 
-Lower the learning-rate scale in the config:
+Lower the learning-rate scale:
 
 ```yaml
 scratch:
-  lr_scale: 0.01   # default 0.02; halve if NaNs appear in training
+  lr_scale: 0.01
 ```
 
-Also ensure `gradient_clip.max_norm` remains at `0.1` (the default conservative value).
+Also use the best validation checkpoint rather than training for more epochs by default.
 
-### `No matching (image, mask) pairs found`
+### No matching image/mask pairs
 
-Verify that image and mask filenames share a common numeric suffix. For example:
-- ✅ `sat_0042.png` ↔ `label_0042.png` (both key to `0042`)
-- ❌ `imageA.png` ↔ `maskB.png` (no numeric suffix — no match)
+Make sure image and mask stems match:
 
-Run the conversion script on a single split to inspect diagnostic output:
-
-```bash
-python scripts/convert_masks_to_coco.py \
-    --dataset_path sam3/train/data/irrigation_canal \
-    --splits train
+```text
+images/Canal_ML_Chip_0000.jpg
+masks/Canal_ML_Chip_0000.png
 ```
 
-### HuggingFace download fails or is slow
+Then rerun COCO conversion.
 
-After a successful download the weights are cached at:
+## Notes
 
-```
-~/.cache/huggingface/hub/models--facebook--sam3/snapshots/<hash>/sam3.pt
-```
-
-To skip re-downloading, note that cached path and set these two fields in [`sam3/train/configs/irrigation_canal/irrigation_canal_finetune.yaml`](sam3/train/configs/irrigation_canal/irrigation_canal_finetune.yaml):
-
-```yaml
-paths:
-  checkpoint_path: ~/.cache/huggingface/hub/models--facebook--sam3/snapshots/<hash>/sam3.pt
-
-trainer:
-  model:
-    load_from_HF: false
-```
+- The first run may download SAM3 weights from Hugging Face.
+- For public benchmarks, report IoU metrics in addition to pixel accuracy.
+- Keep raw datasets, checkpoints, and large archives out of Git.
