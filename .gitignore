@@ -165,3 +165,4 @@ sam3/train/data/road.zip
 *.jpg
 logs/
 experiments/
+.venv/
