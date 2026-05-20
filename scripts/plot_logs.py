@@ -4,7 +4,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 
 
-# LOG_DIR = Path("experiments/road/logs")
+# LOG_DIR = Path("experiments/irrigation canal/logs")
 # TRAIN_PATH = LOG_DIR / "train_stats.json"
 # VAL_PATH = LOG_DIR / "val_stats.json"
 
@@ -15,7 +15,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument(
     "--log-dir",
     type=Path,
-    default=Path("experiments/road/logs"),
+    default=Path("experiments/irrigation canal/logs"),
     help="Directory containing train_stats.json and val_stats.json",
 )
 args = parser.parse_args()
@@ -82,7 +82,7 @@ def plot_val_ap(val_runs):
     plt.figure(figsize=(8, 5))
     for i, run in enumerate(val_runs, start=1):
         epochs = [r["Trainer/epoch"] for r in run]
-        ap = [r["Meters_train/val_road/detection/coco_eval_bbox_AP"] for r in run]
+        ap = [r["Meters_train/val_irrigation canal/detection/coco_eval_bbox_AP"] for r in run]
         label = f"run {i}"
         linewidth = 2.5 if i == len(val_runs) else 1.5
         alpha = 1.0 if i == len(val_runs) else 0.6
@@ -101,11 +101,11 @@ def plot_val_ap(val_runs):
 def print_best_val_per_run(val_runs):
     print("\nBest validation AP per run:")
     for i, run in enumerate(val_runs, start=1):
-        best = max(run, key=lambda r: r["Meters_train/val_road/detection/coco_eval_bbox_AP"])
+        best = max(run, key=lambda r: r["Meters_train/val_irrigation canal/detection/coco_eval_bbox_AP"])
         print(
             f"run {i}: "
             f"best epoch={best['Trainer/epoch']}, "
-            f"AP={best['Meters_train/val_road/detection/coco_eval_bbox_AP']:.6f}"
+            f"AP={best['Meters_train/val_irrigation canal/detection/coco_eval_bbox_AP']:.6f}"
         )
 
 
@@ -121,7 +121,7 @@ def main():
 
     for i, run in enumerate(val_runs, start=1):
         epochs = [r["Trainer/epoch"] for r in run]
-        aps = [r["Meters_train/val_road/detection/coco_eval_bbox_AP"] for r in run]
+        aps = [r["Meters_train/val_irrigation canal/detection/coco_eval_bbox_AP"] for r in run]
         print(f"val run {i}: epochs={epochs}, APs={[round(x, 6) for x in aps]}")
 
     print_best_val_per_run(val_runs)

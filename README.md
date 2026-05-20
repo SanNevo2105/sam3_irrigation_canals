@@ -168,6 +168,8 @@ images/Canal_ML_Chip_0000.jpg
 masks/Canal_ML_Chip_0000.png
 ```
 
+The link to the dataset used for preliminary finetuning: https://drive.google.com/drive/folders/1WIyMazltltBUvg19kxCtEgHauGRWrOI6?usp=sharing
+
 ## Optional: split layered TIFF chips
 
 If your raw `.tif` files contain RGB image channels plus a final binary-mask channel, split them first:

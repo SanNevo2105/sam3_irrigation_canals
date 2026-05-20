@@ -133,7 +133,8 @@ python -m pip install --no-cache-dir \
   einops \
   decord \
   pycocotools \
-  psutil
+  psutil \
+  matplotlib
 
 echo "[8/8] Running import checks..."
 python - <<'PY'
@@ -148,6 +149,7 @@ import decord
 import numpy as np
 import pycocotools
 import psutil
+import matplotlib
 
 print("Python executable:", sys.executable)
 print("pkg_resources    :", pkg_resources.__file__)
@@ -162,6 +164,7 @@ print("decord           :", decord.__version__)
 print("numpy            :", np.__version__)
 print("pycocotools      :", getattr(pycocotools, "__version__", "installed"))
 print("psutil           :", psutil.__version__)
+print("matplotlib       :", matplotlib.__version__)
 PY
 
 echo "[extra] Installing Hugging Face Hub..."

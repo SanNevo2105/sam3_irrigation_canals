@@ -70,6 +70,16 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+# ── PIL resampling constants (Pillow 9 vs 10 compatibility) ───────────────────
+try:
+    from PIL.Image import Resampling as _Resampling
+    _NEAREST  = _Resampling.NEAREST
+    _BILINEAR = _Resampling.BILINEAR
+except ImportError:                         # Pillow < 9.1
+    import PIL.Image as _pil_compat
+    _NEAREST  = _pil_compat.NEAREST   # type: ignore[attr-defined]
+    _BILINEAR = _pil_compat.BILINEAR  # type: ignore[attr-defined]
+
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -518,6 +528,18 @@ def evaluate_test_set(
             model, transform, postprocessor, pil_image, device
         )
 
+        # Resize prediction to match GT mask dimensions.
+        # This follows the same alignment logic as evaluate_test_road.py.
+        if pred_binary.shape != gt_mask.shape:
+            gt_h, gt_w = gt_mask.shape
+            pred_pil   = PILImage.fromarray(pred_binary * 255)
+            pred_pil   = pred_pil.resize((gt_w, gt_h), _NEAREST)
+            pred_binary = (np.array(pred_pil) > 127).astype(np.uint8)
+
+            prob_pil  = PILImage.fromarray((prob_map * 255).clip(0, 255).astype(np.uint8))
+            prob_pil  = prob_pil.resize((gt_w, gt_h), _BILINEAR)
+            prob_map  = np.array(prob_pil).astype(np.float32) / 255.0
+
         # ── Loss  (approximate BCE) ────────────────────────────────────────
         prob_t = torch.tensor(prob_map, dtype=torch.float32)
         gt_t   = torch.tensor(gt_mask,  dtype=torch.float32)
@@ -614,6 +636,14 @@ def show_predictions(
             model, transform, postprocessor, pil_image, device
         )
         print(f"  Visualising [{row + 1}/{n}] {os.path.basename(img_path)}")
+
+        # Resize pred to match GT if needed.
+        # This follows the same alignment logic as evaluate_test_road.py.
+        if pred_binary.shape != gt_mask.shape:
+            gt_h, gt_w = gt_mask.shape
+            pred_pil   = PILImage.fromarray(pred_binary * 255)
+            pred_pil   = pred_pil.resize((gt_w, gt_h), _NEAREST)
+            pred_binary = (np.array(pred_pil) > 127).astype(np.uint8)
 
         # Panel 0: original image
         axes[row][0].imshow(img_np)
