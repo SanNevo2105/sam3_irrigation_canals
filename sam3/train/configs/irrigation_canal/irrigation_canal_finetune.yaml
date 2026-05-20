@@ -265,7 +265,8 @@ trainer:
   gradient_accumulation_steps: ${scratch.gradient_accumulation_steps}
 
   distributed:
-    backend: null   # set to nccl for multi-GPU / multi-node training
+    backend: null   # set to nccl for multi-GPU / multi-node training, null for single-GPU
+    find_unused_parameters: true # set to true for multi-GPU training
 
   loss:
     all: ${irrigation_train.loss}
