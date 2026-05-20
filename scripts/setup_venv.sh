@@ -164,6 +164,43 @@ print("pycocotools      :", getattr(pycocotools, "__version__", "installed"))
 print("psutil           :", psutil.__version__)
 PY
 
+echo "[extra] Installing Hugging Face Hub..."
+python -m pip install --no-cache-dir -U huggingface_hub
+
+echo "[extra] Checking Hugging Face authentication..."
+if [ -n "${HF_TOKEN:-}" ]; then
+    echo "HF_TOKEN is set. Logging in to Hugging Face..."
+    python - <<'PY'
+import os
+from huggingface_hub import login
+
+token = os.environ["HF_TOKEN"]
+login(token=token, add_to_git_credential=False)
+print("Hugging Face login complete.")
+PY
+else
+    echo "HF_TOKEN is not set."
+    echo "If using gated SAM3 weights, run one of:"
+    echo "  export HF_TOKEN=your_huggingface_token"
+    echo "  huggingface-cli login"
+fi
+
+echo "[extra] Testing access to facebook/sam3..."
+python - <<'PY'
+from huggingface_hub import hf_hub_download
+
+try:
+    path = hf_hub_download(
+        repo_id="facebook/sam3",
+        filename="config.json",
+    )
+    print("facebook/sam3 access OK:", path)
+except Exception as e:
+    print("WARNING: Could not access facebook/sam3.")
+    print("You may need to accept the model license on Hugging Face and set HF_TOKEN.")
+    print("Error:", repr(e))
+PY
+
 echo "============================================================"
 echo "Venv binary check"
 echo "============================================================"
