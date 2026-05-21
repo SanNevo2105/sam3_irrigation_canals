@@ -166,3 +166,4 @@ sam3/train/data/road.zip
 logs/
 experiments/
 .venv/
+predictions/
