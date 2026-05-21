@@ -1,5 +1,5 @@
 """
-Landslide Test-Set Evaluation using the Fine-tuned SAM3 Model
+Irrigation Canal Test-Set Evaluation using the Fine-tuned SAM3 Model
 =============================================================
 
 Reproduces the 4 metrics from the reference test snippet:
@@ -32,10 +32,10 @@ Usage
 
     # Fresh HuggingFace weights, custom dataset folder:
     python scripts/evaluate_test.py \\
-        --dataset-root /home/rocky/sam3/sam3/train/data/landslide_dataset \\
+        --dataset-root /path/to/sam3_irrigation_canals/sam3/train/data/irrigation_canal \\
         --split test \\
         --load-from-hf \\
-        --text-prompt "landslide"
+        --text-prompt "irrigation canal"
 
     # Direct image / mask directory override:
     python scripts/evaluate_test.py \\
@@ -45,11 +45,11 @@ Usage
 
 CLI arguments
 -------------
-    --dataset-root   Root dataset folder (default: assets/landslide_dataset)
+    --dataset-root   Root dataset folder (default: sam3/train/data/irrigation_canal)
     --split          Sub-folder name, e.g. "test" or "validation" (default: test)
     --image-dir      Direct path to image folder (overrides dataset-root/split)
     --mask-dir       Direct path to mask folder  (overrides dataset-root/split)
-    --text-prompt    Text query string (default: "landslide")
+    --text-prompt    Text query string (default: "irrigation canal")
     --bpe-path       Path to BPE vocabulary file (auto-resolved if not given)
     --checkpoint-path  Path to a fine-tuned trainer checkpoint
     --load-from-hf   Load fresh weights from HuggingFace instead of a local ckpt
@@ -109,15 +109,15 @@ from sam3.train.transforms.basic_for_api import (
 # ── Default paths (relative to repository root) ───────────────────────────────
 _SAM3_ROOT = Path(sam3.__file__).resolve().parent.parent   # …/sam3/
 
-DATASET_ROOT    = _SAM3_ROOT / "assets" / "landslide_dataset"
+DATASET_ROOT    = _SAM3_ROOT / "sam3" / "train" / "data" / "irrigation_canal"
 TEST_IMAGE_DIR  = DATASET_ROOT / "test" / "images"
 TEST_MASK_DIR   = DATASET_ROOT / "test" / "masks"
 BPE_PATH        = _SAM3_ROOT / "sam3" / "assets" / "bpe_simple_vocab_16e6.txt.gz"
 CHECKPOINT_PATH = (
-    _SAM3_ROOT / "experiments" / "landslide" / "checkpoints" / "checkpoint.pt"
+    _SAM3_ROOT / "experiments" / "irrigation_canal" / "checkpoints" / "checkpoint.pt"
 )
 
-TEXT_PROMPT = "landslide"
+TEXT_PROMPT = "irrigation canal"
 DEVICE      = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # ── Fixed query-ID used for single-image inference batches ────────────────────
@@ -130,7 +130,7 @@ _INFERENCE_ID = 1
 # Dataset
 # ==============================================================================
 
-class LandslideTestDataset(Dataset):
+class IrrigationTestDataset(Dataset):
     """
     Paired (image, binary-mask) test dataset.
 
@@ -250,7 +250,7 @@ def load_model(
             f"Fine-tuned checkpoint not found:\n  {checkpoint_path}\n\n"
             "Either run training first:\n"
             "  python sam3/train/train.py "
-            "-c configs/landslide/landslide_2.yaml\n\n"
+            "-c configs/irrigation_canal/irrigation_canal_finetune.yaml\n\n"
             "Or load pre-trained weights from HuggingFace with --load-from-hf."
         )
 
@@ -288,12 +288,12 @@ def load_model(
 
 
 # ==============================================================================
-# Transform  (mirrors landslide_finetune.yaml → landslide_train.val_transforms)
+# Transform  (mirrors irrigation_canal_finetune.yaml → irrigation_canal_train.val_transforms)
 # ==============================================================================
 
 def build_transform() -> ComposeAPI:
     """
-    Validation transform pipeline matching ``landslide_finetune.yaml``::
+    Validation transform pipeline matching ``irrigation_canal_finetune.yaml``::
 
         val_transforms:
           - ComposeAPI:
@@ -316,7 +316,7 @@ def build_transform() -> ComposeAPI:
 
 
 # ==============================================================================
-# Postprocessor  (mirrors landslide_finetune.yaml → scratch.original_box_postprocessor)
+# Postprocessor  (mirrors irrigation_canal_finetune.yaml → scratch.original_box_postprocessor)
 # ==============================================================================
 
 def build_postprocessor() -> PostProcessImage:
@@ -354,7 +354,7 @@ def run_inference_on_image(
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Run SAM3 inference on a single PIL image with the text prompt
-    ``TEXT_PROMPT = "landslide"``.
+    ``TEXT_PROMPT = "irrigation canal"``.
 
     Follows the batched-inference API demonstrated in
     ``examples/sam3_image_batched_inference.ipynb``.
@@ -364,14 +364,14 @@ def run_inference_on_image(
     model, transform, postprocessor
         Components built by the helper functions above.
     pil_image
-        A single RGB PIL image (any resolution; 128 × 128 for landslide data).
+        A single RGB PIL image (any resolution; 128 × 128 for irrigation canal data).
     device
         Target torch device.
 
     Returns
     -------
     pred_binary : np.ndarray  shape (H, W)  dtype uint8  values {0, 1}
-        Semantic prediction mask – 1 where the model detects landslide.
+        Semantic prediction mask – 1 where the model detects irrigation canal.
         Built as the logical OR of all confident instance masks.
 
     prob_map : np.ndarray  shape (H, W)  dtype float32  range [0, 1]
@@ -396,7 +396,7 @@ def run_inference_on_image(
                 original_image_id=_INFERENCE_ID,
                 original_category_id=1,
                 # Convention from the inference notebook: [width, height].
-                # For the 128×128 landslide images this is symmetric, so the
+                # For the 128×128 irrigation canal images this is symmetric, so the
                 # order does not affect correctness.
                 original_size=[w_orig, h_orig],
                 object_id=0,
@@ -461,9 +461,9 @@ def compute_mean_iou(pred: np.ndarray, gt: np.ndarray) -> float:
     """
     Per-image binary IoU on the foreground class (label = 1).
 
-    Returns 1.0 when both masks are entirely background (no landslide),
+    Returns 1.0 when both masks are entirely background (no irrigation canal),
     which is the semantically correct answer: the model correctly identified
-    the absence of landslide.
+    the absence of irrigation canal.
     """
     intersection = int(((pred == 1) & (gt == 1)).sum())
     union        = int(((pred == 1) | (gt == 1)).sum())
@@ -481,11 +481,11 @@ def evaluate_test_set(
     model:         torch.nn.Module,
     transform:     ComposeAPI,
     postprocessor: PostProcessImage,
-    dataset:       LandslideTestDataset,
+    dataset:       IrrigationTestDataset,
     device:        torch.device = DEVICE,
 ) -> Dict[str, float]:
     """
-    Evaluate the fine-tuned SAM3 model on the landslide test set.
+    Evaluate the fine-tuned SAM3 model on the irrigation canal test set.
 
     Mirrors the structure of the reference test snippet::
 
@@ -576,7 +576,7 @@ def evaluate_test_set(
 # ==============================================================================
 
 def show_predictions(
-    dataset:       LandslideTestDataset,
+    dataset:       IrrigationTestDataset,
     num_images:    int = 10,
     model:         Optional[torch.nn.Module]  = None,
     transform:     Optional[ComposeAPI]       = None,
@@ -600,7 +600,7 @@ def show_predictions(
     Parameters
     ----------
     dataset
-        A ``LandslideTestDataset`` instance.
+        A ``IrrigationTestDataset`` instance.
     num_images
         Number of test images to visualise (default 10).
     model, transform, postprocessor, device
@@ -682,7 +682,7 @@ def _parse_args(argv=None) -> argparse.Namespace:
 
     p = argparse.ArgumentParser(
         description=(
-            "Landslide Test-Set Evaluation using the SAM3 Model.  "
+            "Irrigation Test-Set Evaluation using the SAM3 Model.  "
             "Supports both fine-tuned local checkpoints and fresh "
             "HuggingFace weights."
         ),
@@ -693,7 +693,7 @@ def _parse_args(argv=None) -> argparse.Namespace:
     ds = p.add_argument_group("Dataset")
     ds.add_argument(
         "--dataset-root",
-        default=str(_SAM3_ROOT_local / "assets" / "landslide_dataset"),
+        default=str(_SAM3_ROOT_local / "sam3" / "train" / "data" / "irrigation_canal"),
         metavar="DIR",
         help=(
             "Root dataset folder.  Images are expected at "
@@ -817,7 +817,7 @@ if __name__ == "__main__":
     _text_prompt = args.text_prompt
 
     print("=" * 65)
-    print("Landslide Test-Set Evaluation")
+    print("Irrigation Test-Set Evaluation")
     print("=" * 65)
     print(f"Device          : {DEVICE}")
     if args.load_from_hf:
@@ -841,12 +841,12 @@ if __name__ == "__main__":
 
     # Build dataset (requires mask_dir; falls back gracefully if absent)
     if _mask_dir is not None:
-        test_dataset = LandslideTestDataset(image_dir=_image_dir, mask_dir=_mask_dir)
+        test_dataset = IrrigationTestDataset(image_dir=_image_dir, mask_dir=_mask_dir)
     else:
         # No GT masks – create a dataset that only yields images
-        # (reuse LandslideTestDataset with a dummy mask dir check removed via
+        # (reuse IrrigationTestDataset with a dummy mask dir check removed via
         # a minimal subclass)
-        class _ImageOnlyDataset(LandslideTestDataset):
+        class _ImageOnlyDataset(IrrigationTestDataset):
             def __init__(self, image_dir):
                 import re as _re
                 self.image_dir = Path(image_dir)
