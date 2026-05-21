@@ -311,6 +311,17 @@ class Sam3Image(torch.nn.Module):
         num_o2m = hs.size(2) - num_o2o
         assert num_o2m == (num_o2o if apply_dac else 0)
         out["queries"] = hs[-1][:, :num_o2o]  # remove o2m queries if there are any
+
+        # Diagnostic: detect NaN in decoder hidden states (hs) from BF16 attention overflow
+        _n_nonfinite_hs = (~torch.isfinite(hs)).sum().item()
+        if _n_nonfinite_hs > 0:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                f"[UPDATE_SCORES_AND_BOXES] hs has {_n_nonfinite_hs} non-finite "
+                f"value(s) entering _update_scores_and_boxes — BF16 attention overflow "
+                f"in decoder. Shape: {hs.shape}."
+            )
+
         # score prediction
         if self.use_dot_prod_scoring:
             dot_prod_scoring_head = self.dot_prod_scoring
@@ -330,9 +341,27 @@ class Sam3Image(torch.nn.Module):
             and self.transformer.decoder.instance_bbox_embed is not None
         ):
             box_head = self.transformer.decoder.instance_bbox_embed
-        anchor_box_offsets = box_head(hs)
-        reference_boxes_inv_sig = inverse_sigmoid(reference_boxes)
-        outputs_coord = (reference_boxes_inv_sig + anchor_box_offsets).sigmoid()
+        with torch.amp.autocast(device_type="cuda", enabled=False):
+            anchor_box_offsets = box_head(hs.float())
+            # Clamp before inverse_sigmoid: initial reference boxes (from
+            # self.reference_points.weight.sigmoid()) can become exactly 0.0
+            # or 1.0 in BF16 after many gradient steps, causing inverse_sigmoid
+            # to produce ±inf even in FP32.
+            ref_boxes_f = reference_boxes.float()
+            n_saturated = ((ref_boxes_f <= 0.0) | (ref_boxes_f >= 1.0)).sum().item()
+            if n_saturated > 0:
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    f"[BOX_HEAD] {n_saturated} reference_box coordinate(s) saturated "
+                    f"to 0/1 before inverse_sigmoid (min={ref_boxes_f.min().item():.6f}, "
+                    f"max={ref_boxes_f.max().item():.6f}); clamping to [0.01, 0.99]."
+                )
+            ref_boxes_f = ref_boxes_f.clamp(min=0.01, max=0.99)
+            reference_boxes_inv_sig = inverse_sigmoid(ref_boxes_f)
+            outputs_coord = (
+                reference_boxes_inv_sig + anchor_box_offsets
+            ).sigmoid().clamp(min=0.01, max=0.99)
+        outputs_coord = outputs_coord.to(hs.dtype)
         outputs_boxes_xyxy = box_cxcywh_to_xyxy(outputs_coord)
 
         if dec_presence_out is not None:

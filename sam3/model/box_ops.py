@@ -114,7 +114,10 @@ def box_iou(boxes1, boxes2):
 
     union = area1[..., None] + area2[..., None, :] - inter
 
-    iou = inter / union
+    # clamp(min=1e-2): forward prevents 0/0; backward gradient floor = inter/(1e-2)^2 = 1e4
+    # (well below BF16 max ~6.5e4), vs 1e-3 which gives 1e6 → still triggers NaN at late
+    # training when loss plateaus and near-zero-area road segments accumulate.
+    iou = inter / union.clamp(min=1e-2)
     return iou, union
 
 
@@ -141,7 +144,7 @@ def generalized_box_iou(boxes1, boxes2):
     wh = (rb - lt).clamp(min=0)  # (..., N, M, 2)
     area = wh[..., 0] * wh[..., 1]  # (..., N, M)
 
-    return iou - (area - union) / area
+    return iou - (area - union) / area.clamp(min=1e-2)
 
 
 @torch.jit.script
@@ -166,9 +169,9 @@ def fast_diag_generalized_box_iou(boxes1, boxes2):
 
     union = area1 + area2 - inter
 
-    iou = inter / union
+    iou = inter / union.clamp(min=1e-2)
 
-    return iou - (tot_area - union) / tot_area
+    return iou - (tot_area - union) / tot_area.clamp(min=1e-2)
 
 
 @torch.jit.script
@@ -190,7 +193,7 @@ def fast_diag_box_iou(boxes1, boxes2):
 
     union = area1 + area2 - inter
 
-    iou = inter / union
+    iou = inter / union.clamp(min=1e-2)
 
     return iou
 

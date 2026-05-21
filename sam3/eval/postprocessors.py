@@ -264,13 +264,13 @@ class PostProcessImage(nn.Module):
             _worst_y0 = float(boxes[..., 1].min().item())
             _worst_x1 = float((boxes[..., 2] - _upper[..., 2]).max().item())
             _worst_y1 = float((boxes[..., 3] - _upper[..., 3]).max().item())
-            logging.warning(
-                f"[POSTPROC] Clamping {_n} predicted box coordinate(s) that exceeded "
-                f"image boundaries (min_x0={_worst_x0:.3f}, min_y0={_worst_y0:.3f}, "
-                f"max_x1_overflow={_worst_x1:.3f}, max_y1_overflow={_worst_y1:.3f}). "
-                f"Likely cause: near-full-image GT boxes training the box head to "
-                f"predict w/h ≈ 1.0 with floating-point drift beyond the boundary."
-            )
+            # logging.warning(
+            #     f"[POSTPROC] Clamping {_n} predicted box coordinate(s) that exceeded "
+            #     f"image boundaries (min_x0={_worst_x0:.3f}, min_y0={_worst_y0:.3f}, "
+            #     f"max_x1_overflow={_worst_x1:.3f}, max_y1_overflow={_worst_y1:.3f}). "
+            #     f"Likely cause: near-full-image GT boxes training the box head to "
+            #     f"predict w/h ≈ 1.0 with floating-point drift beyond the boundary."
+            # )
         # Clamp lower bound (x0, y0 ≥ 0) and upper bound (x1 ≤ W, y1 ≤ H).
         boxes = boxes.clamp(min=0)
         boxes = torch.min(boxes, _upper)

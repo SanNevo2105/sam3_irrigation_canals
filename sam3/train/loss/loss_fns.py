@@ -563,8 +563,13 @@ class Boxes(LossWithWeights):
         losses = {}
         losses["loss_bbox"] = loss_bbox.sum() / num_boxes
 
+        # Clamp predicted boxes to [0, 1] before GIoU.  Without this, BF16
+        # can produce x1 < x0 (inverted box) or coordinates > 1 (out-of-image),
+        # causing negative areas or an exploding enclosing-box term
+        # (tot_area - union) / tot_area → huge number or NaN.
+        src_boxes_xyxy_clamped = src_boxes_xyxy.clamp(min=0.0, max=1.0)
         loss_giou = 1 - box_ops.fast_diag_generalized_box_iou(
-            src_boxes_xyxy, target_boxes_giou
+            src_boxes_xyxy_clamped, target_boxes_giou
         )
         losses["loss_giou"] = loss_giou.sum() / num_boxes
         return losses

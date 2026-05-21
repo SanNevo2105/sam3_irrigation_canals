@@ -1,395 +1,531 @@
-# SAM 3: Segment Anything with Concepts
+# SAM3 Irrigation Canal Fine-tuning
 
-Meta Superintelligence Labs
+Fine-tune SAM3 on satellite imagery for **binary irrigation-canal segmentation**. The pipeline takes paired images and binary masks, converts them to COCO annotations for SAM3 training, then evaluates the trained checkpoint with segmentation metrics such as IoU and pixel accuracy.
 
-[Nicolas Carion](https://www.nicolascarion.com/)\*,
-[Laura Gustafson](https://scholar.google.com/citations?user=c8IpF9gAAAAJ&hl=en)\*,
-[Yuan-Ting Hu](https://scholar.google.com/citations?user=E8DVVYQAAAAJ&hl=en)\*,
-[Shoubhik Debnath](https://scholar.google.com/citations?user=fb6FOfsAAAAJ&hl=en)\*,
-[Ronghang Hu](https://ronghanghu.com/)\*,
-[Didac Suris](https://www.didacsuris.com/)\*,
-[Chaitanya Ryali](https://scholar.google.com/citations?user=4LWx24UAAAAJ&hl=en)\*,
-[Kalyan Vasudev Alwala](https://scholar.google.co.in/citations?user=m34oaWEAAAAJ&hl=en)\*,
-[Haitham Khedr](https://hkhedr.com/)\*, Andrew Huang,
-[Jie Lei](https://jayleicn.github.io/),
-[Tengyu Ma](https://scholar.google.com/citations?user=VeTSl0wAAAAJ&hl=en),
-[Baishan Guo](https://scholar.google.com/citations?user=BC5wDu8AAAAJ&hl=en),
-Arpit Kalla, [Markus Marks](https://damaggu.github.io/),
-[Joseph Greer](https://scholar.google.com/citations?user=guL96CkAAAAJ&hl=en),
-Meng Wang, [Peize Sun](https://peizesun.github.io/),
-[Roman Rädle](https://scholar.google.com/citations?user=Tpt57v0AAAAJ&hl=en),
-[Triantafyllos Afouras](https://www.robots.ox.ac.uk/~afourast/),
-[Effrosyni Mavroudi](https://scholar.google.com/citations?user=vYRzGGEAAAAJ&hl=en),
-[Katherine Xu](https://k8xu.github.io/)°,
-[Tsung-Han Wu](https://patrickthwu.com/)°,
-[Yu Zhou](https://yu-bryan-zhou.github.io/)°,
-[Liliane Momeni](https://scholar.google.com/citations?user=Lb-KgVYAAAAJ&hl=en)°,
-[Rishi Hazra](https://rishihazra.github.io/)°,
-[Shuangrui Ding](https://mark12ding.github.io/)°,
-[Sagar Vaze](https://sgvaze.github.io/)°,
-[Francois Porcher](https://scholar.google.com/citations?user=LgHZ8hUAAAAJ&hl=en)°,
-[Feng Li](https://fengli-ust.github.io/)°,
-[Siyuan Li](https://siyuanliii.github.io/)°,
-[Aishwarya Kamath](https://ashkamath.github.io/)°,
-[Ho Kei Cheng](https://hkchengrex.com/)°,
-[Piotr Dollar](https://pdollar.github.io/)†,
-[Nikhila Ravi](https://nikhilaravi.com/)†,
-[Kate Saenko](https://ai.bu.edu/ksaenko.html)†,
-[Pengchuan Zhang](https://pzzhang.github.io/pzzhang/)†,
-[Christoph Feichtenhofer](https://feichtenhofer.github.io/)†
+## What this repo does
 
-\* core contributor, ° intern, † project lead, order is random within groups
+- Converts image/mask datasets into COCO JSON.
+- Fine-tunes SAM3 using box + mask supervision.
+- Supports local, container, and Slurm-based training.
+- Evaluates checkpoints on binary segmentation metrics:
+  - mean IoU
+  - global IoU
+  - pixel accuracy
+  - approximate BCE loss
+- Provides utilities for splitting layered RGBA TIFF chips into RGB images and binary masks.
 
-[[`Paper`](https://ai.meta.com/research/publications/sam-3-segment-anything-with-concepts/)]
-[[`Project`](https://ai.meta.com/sam3)]
-[[`Demo`](https://segment-anything.com/)]
-[[`Blog`](https://ai.meta.com/blog/segment-anything-model-3/)]
-[[`BibTeX`](#citing-sam-3)]
-
-![SAM 3 architecture](assets/model_diagram.png?raw=true) SAM 3 is a unified foundation model for promptable segmentation in images and videos. It can detect, segment, and track objects using text or visual prompts such as points, boxes, and masks. Compared to its predecessor [SAM 2](https://github.com/facebookresearch/sam2), SAM 3 introduces the ability to exhaustively segment all instances of an open-vocabulary concept specified by a short text phrase or exemplars. Unlike prior work, SAM 3 can handle a vastly larger set of open-vocabulary prompts. It achieves 75-80% of human performance on our new [SA-CO benchmark](https://github.com/facebookresearch/sam3?tab=readme-ov-file#sa-co-dataset) which contains 270K unique concepts, over 50 times more than existing benchmarks.
-
-This breakthrough is driven by an innovative data engine that has automatically annotated over 4 million unique concepts, creating the largest high-quality open-vocabulary segmentation dataset to date. In addition, SAM 3 introduces a new model architecture featuring a presence token that improves discrimination between closely related text prompts (e.g., “a player in white” vs. “a player in red”), as well as a decoupled detector–tracker design that minimizes task interference and scales efficiently with data.
-
-<p align="center">
-  <img src="assets/dog.gif" width=380 />
-  <img src="assets/player.gif" width=380 />
-</p>
-
-## Installation
-
-### Prerequisites
-
-- Python 3.12 or higher
-- PyTorch 2.7 or higher
-- CUDA-compatible GPU with CUDA 12.6 or higher
-
-1. **Create a new Conda environment:**
+## Clone the repository
 
 ```bash
-conda create -n sam3 python=3.12
-conda deactivate
-conda activate sam3
+git clone https://github.com/SanNevo2105/sam3_irrigation_canals.git
+cd sam3_irrigation_canals
 ```
 
-2. **Install PyTorch with CUDA support:**
+## Hugging Face access
+
+SAM3 weights are hosted behind a gated Hugging Face repository. Before setup or training, make sure your Hugging Face account has access to `facebook/sam3`.
+
+Set your token in the shell:
 
 ```bash
-pip install torch==2.7.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+export HF_TOKEN="your_huggingface_token_here"
 ```
 
-3. **Clone the repository and install the package:**
+You can also log in manually:
 
 ```bash
-git clone https://github.com/facebookresearch/sam3.git
-cd sam3
-pip install -e .
+hf auth login
 ```
 
-4. **Install additional dependencies for example notebooks or development:**
+## Environment setup
+
+Use the provided setup script. It creates the virtual environment with copied Python binaries, installs PyTorch, installs this repo in editable mode, and checks key dependencies.
+
+### HPC clusters, for example Empire AI
+
+On Empire AI, use the cluster Python module:
 
 ```bash
-# For running example notebooks
-pip install -e ".[notebooks]"
+export HF_TOKEN="your_huggingface_token_here"
 
-# For development
-pip install -e ".[train,dev]"
+PYTHON_MODULE=python39 PYTHON_BIN=python3.9 bash scripts/setup_venv.sh .venv
+source .venv/bin/activate
 ```
 
-## Getting Started
-
-⚠️ Before using SAM 3, please request access to the checkpoints on the SAM 3
-Hugging Face [repo](https://huggingface.co/facebook/sam3). Once accepted, you
-need to be authenticated to download the checkpoints. You can do this by running
-the following [steps](https://huggingface.co/docs/huggingface_hub/en/quick-start#authentication)
-(e.g. `hf auth login` after generating an access token.)
-
-### Basic Usage
-
-```python
-import torch
-#################################### For Image ####################################
-from PIL import Image
-from sam3.model_builder import build_sam3_image_model
-from sam3.model.sam3_image_processor import Sam3Processor
-# Load the model
-model = build_sam3_image_model()
-processor = Sam3Processor(model)
-# Load an image
-image = Image.open("<YOUR_IMAGE_PATH.jpg>")
-inference_state = processor.set_image(image)
-# Prompt the model with text
-output = processor.set_text_prompt(state=inference_state, prompt="<YOUR_TEXT_PROMPT>")
-
-# Get the masks, bounding boxes, and scores
-masks, boxes, scores = output["masks"], output["boxes"], output["scores"]
-
-#################################### For Video ####################################
-
-from sam3.model_builder import build_sam3_video_predictor
-
-video_predictor = build_sam3_video_predictor()
-video_path = "<YOUR_VIDEO_PATH>" # a JPEG folder or an MP4 video file
-# Start a session
-response = video_predictor.handle_request(
-    request=dict(
-        type="start_session",
-        resource_path=video_path,
-    )
-)
-response = video_predictor.handle_request(
-    request=dict(
-        type="add_prompt",
-        session_id=response["session_id"],
-        frame_index=0, # Arbitrary frame index
-        text="<YOUR_TEXT_PROMPT>",
-    )
-)
-output = response["outputs"]
-```
-
-## Examples
-
-The `examples` directory contains notebooks demonstrating how to use SAM3 with
-various types of prompts:
-
-- [`sam3_image_predictor_example.ipynb`](examples/sam3_image_predictor_example.ipynb)
-  : Demonstrates how to prompt SAM 3 with text and visual box prompts on images.
-- [`sam3_video_predictor_example.ipynb`](examples/sam3_video_predictor_example.ipynb)
-  : Demonstrates how to prompt SAM 3 with text prompts on videos, and doing
-  further interactive refinements with points.
-- [`sam3_image_batched_inference.ipynb`](examples/sam3_image_batched_inference.ipynb)
-  : Demonstrates how to run batched inference with SAM 3 on images.
-- [`sam3_agent.ipynb`](examples/sam3_agent.ipynb): Demonsterates the use of SAM
-  3 Agent to segment complex text prompt on images.
-- [`saco_gold_silver_vis_example.ipynb`](examples/saco_gold_silver_vis_example.ipynb)
-  : Shows a few examples from SA-Co image evaluation set.
-- [`saco_veval_vis_example.ipynb`](examples/saco_veval_vis_example.ipynb) :
-  Shows a few examples from SA-Co video evaluation set.
-
-There are additional notebooks in the examples directory that demonstrate how to
-use SAM 3 for interactive instance segmentation in images and videos (SAM 1/2
-tasks), or as a tool for an MLLM, and how to run evaluations on the SA-Co
-dataset.
-
-To run the Jupyter notebook examples:
+Verify:
 
 ```bash
-# Make sure you have the notebooks dependencies installed
-pip install -e ".[notebooks]"
-
-# Start Jupyter notebook
-jupyter notebook examples/sam3_image_predictor_example.ipynb
+.venv/bin/python --version
+.venv/bin/python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+.venv/bin/python -c "import submitit, cv2, einops, decord; print('extra imports OK')"
 ```
 
-## Model
+Expected behavior:
 
-SAM 3 consists of a detector and a tracker that share a vision encoder. It has 848M parameters. The
-detector is a DETR-based model conditioned on text, geometry, and image
-exemplars. The tracker inherits the SAM 2 transformer encoder-decoder
-architecture, supporting video segmentation and interactive refinement.
+```text
+CUDA available: True
+extra imports OK
+```
 
-## Image Results
+### Containers, for example RunPod
 
-<div align="center">
-<table style="min-width: 80%; border: 2px solid #ddd; border-collapse: collapse">
-  <thead>
-    <tr>
-      <th rowspan="3" style="border-right: 2px solid #ddd; padding: 12px 20px">Model</th>
-      <th colspan="3" style="text-align: center; border-right: 2px solid #ddd; padding: 12px 20px">Instance Segmentation</th>
-      <th colspan="5" style="text-align: center; padding: 12px 20px">Box Detection</th>
-    </tr>
-    <tr>
-      <th colspan="2" style="text-align: center; border-right: 1px solid #eee; padding: 12px 20px">LVIS</th>
-      <th style="text-align: center; border-right: 2px solid #ddd; padding: 12px 20px">SA-Co/Gold</th>
-      <th colspan="2" style="text-align: center; border-right: 1px solid #eee; padding: 12px 20px">LVIS</th>
-      <th colspan="2" style="text-align: center; border-right: 1px solid #eee; padding: 12px 20px">COCO</th>
-      <th style="text-align: center; padding: 12px 20px">SA-Co/Gold</th>
-    </tr>
-    <tr>
-      <th style="text-align: center; padding: 12px 20px">cgF1</th>
-      <th style="text-align: center; border-right: 1px solid #eee; padding: 12px 20px">AP</th>
-      <th style="text-align: center; border-right: 2px solid #ddd; padding: 12px 20px">cgF1</th>
-      <th style="text-align: center; padding: 12px 20px">cgF1</th>
-      <th style="text-align: center; border-right: 1px solid #eee; padding: 12px 20px">AP</th>
-      <th style="text-align: center; padding: 12px 20px">AP</th>
-      <th style="text-align: center; border-right: 1px solid #eee; padding: 12px 20px">AP<sub>o</sub>
-</th>
-      <th style="text-align: center; padding: 12px 20px">cgF1</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td style="border-right: 2px solid #ddd; padding: 10px 20px">Human</td>
-      <td style="text-align: center; padding: 10px 20px">-</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">-</td>
-      <td style="text-align: center; border-right: 2px solid #ddd; padding: 10px 20px">72.8</td>
-      <td style="text-align: center; padding: 10px 20px">-</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">-</td>
-      <td style="text-align: center; padding: 10px 20px">-</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">-</td>
-      <td style="text-align: center; padding: 10px 20px">74.0</td>
-    </tr>
-    <tr>
-      <td style="border-right: 2px solid #ddd; padding: 10px 20px">OWLv2*</td>
-      <td style="text-align: center; padding: 10px 20px; color: #999">29.3</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px; color: #999">43.4</td>
-      <td style="text-align: center; border-right: 2px solid #ddd; padding: 10px 20px">24.6</td>
-      <td style="text-align: center; padding: 10px 20px; color: #999">30.2</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px; color: #999">45.5</td>
-      <td style="text-align: center; padding: 10px 20px">46.1</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">23.9</td>
-      <td style="text-align: center; padding: 10px 20px">24.5</td>
-    </tr>
-    <tr>
-      <td style="border-right: 2px solid #ddd; padding: 10px 20px">DINO-X</td>
-      <td style="text-align: center; padding: 10px 20px">-</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">38.5</td>
-      <td style="text-align: center; border-right: 2px solid #ddd; padding: 10px 20px">21.3</td>
-      <td style="text-align: center; padding: 10px 20px">-</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">52.4</td>
-      <td style="text-align: center; padding: 10px 20px">56.0</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">-</td>
-      <td style="text-align: center; padding: 10px 20px">22.5</td>
-    </tr>
-    <tr>
-      <td style="border-right: 2px solid #ddd; padding: 10px 20px">Gemini 2.5</td>
-      <td style="text-align: center; padding: 10px 20px">13.4</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">-</td>
-      <td style="text-align: center; border-right: 2px solid #ddd; padding: 10px 20px">13.0</td>
-      <td style="text-align: center; padding: 10px 20px">16.1</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">-</td>
-      <td style="text-align: center; padding: 10px 20px">-</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">-</td>
-      <td style="text-align: center; padding: 10px 20px">14.4</td>
-    </tr>
-    <tr style="border-top: 2px solid #b19c9cff">
-      <td style="border-right: 2px solid #ddd; padding: 10px 20px">SAM 3</td>
-      <td style="text-align: center; padding: 10px 20px">37.2</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">48.5</td>
-      <td style="text-align: center; border-right: 2px solid #ddd; padding: 10px 20px">54.1</td>
-      <td style="text-align: center; padding: 10px 20px">40.6</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">53.6</td>
-      <td style="text-align: center; padding: 10px 20px">56.4</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">55.7</td>
-      <td style="text-align: center; padding: 10px 20px">55.7</td>
-    </tr>
-  </tbody>
-</table>
-
-<p style="text-align: center; margin-top: 10px; font-size: 0.9em; color: #ddd;">* Partially trained on LVIS, AP<sub>o</sub> refers to COCO-O accuracy</p>
-
-</div>
-
-## Video Results
-
-<div align="center">
-<table style="min-width: 80%; border: 2px solid #ddd; border-collapse: collapse">
-  <thead>
-    <tr>
-      <th rowspan="2" style="border-right: 2px solid #ddd; padding: 12px 20px">Model</th>
-      <th colspan="2" style="text-align: center; border-right: 1px solid #eee; padding: 12px 20px">SA-V test</th>
-      <th colspan="2" style="text-align: center; border-right: 1px solid #eee; padding: 12px 20px">YT-Temporal-1B test</th>
-      <th colspan="2" style="text-align: center; border-right: 1px solid #eee; padding: 12px 20px">SmartGlasses test</th>
-      <th style="text-align: center; border-right: 1px solid #eee; padding: 12px 20px">LVVIS test</th>
-      <th style="text-align: center; padding: 12px 20px">BURST test</th>
-    </tr>
-    <tr>
-      <th style="text-align: center; padding: 12px 20px">cgF1</th>
-      <th style="text-align: center; border-right: 1px solid #eee; padding: 12px 20px">pHOTA</th>
-      <th style="text-align: center; padding: 12px 20px">cgF1</th>
-      <th style="text-align: center; border-right: 1px solid #eee; padding: 12px 20px">pHOTA</th>
-      <th style="text-align: center; padding: 12px 20px">cgF1</th>
-      <th style="text-align: center; border-right: 1px solid #eee; padding: 12px 20px">pHOTA</th>
-      <th style="text-align: center; border-right: 1px solid #eee; padding: 12px 20px">mAP</th>
-      <th style="text-align: center; padding: 12px 20px">HOTA</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td style="border-right: 2px solid #ddd; padding: 10px 20px">Human</td>
-      <td style="text-align: center; padding: 10px 20px">53.1</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">70.5</td>
-      <td style="text-align: center; padding: 10px 20px">71.2</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">78.4</td>
-      <td style="text-align: center; padding: 10px 20px">58.5</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">72.3</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">-</td>
-      <td style="text-align: center; padding: 10px 20px">-</td>
-    </tr>
-    <tr style="border-top: 2px solid #b19c9cff">
-      <td style="border-right: 2px solid #ddd; padding: 10px 20px">SAM 3</td>
-      <td style="text-align: center; padding: 10px 20px">30.3</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">58.0</td>
-      <td style="text-align: center; padding: 10px 20px">50.8</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">69.9</td>
-      <td style="text-align: center; padding: 10px 20px">36.4</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">63.6</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">36.3</td>
-      <td style="text-align: center; padding: 10px 20px">44.5</td>
-    </tr>
-  </tbody>
-</table>
-</div>
-
-## SA-Co Dataset
-
-We release 2 image benchmarks, [SA-Co/Gold](scripts/eval/gold/README.md) and
-[SA-Co/Silver](scripts/eval/silver/README.md), and a video benchmark
-[SA-Co/VEval](scripts/eval/veval/README.md). The datasets contain images (or videos) with annotated noun phrases. Each image/video and noun phrase pair is annotated with instance masks and unique IDs of each object matching the phrase. Phrases that have no matching objects (negative prompts) have no masks, shown in red font in the figure. See the linked READMEs for more details on how to download and run evaluations on the datasets.
-
-* HuggingFace host: [SA-Co/Gold](https://huggingface.co/datasets/facebook/SACo-Gold), [SA-Co/Silver](https://huggingface.co/datasets/facebook/SACo-Silver) and [SA-Co/VEval](https://huggingface.co/datasets/facebook/SACo-VEval)
-* Roboflow host: [SA-Co/Gold](https://universe.roboflow.com/sa-co-gold), [SA-Co/Silver](https://universe.roboflow.com/sa-co-silver) and [SA-Co/VEval](https://universe.roboflow.com/sa-co-veval)
-
-![SA-Co dataset](assets/sa_co_dataset.jpg?raw=true)
-
-## Development
-
-To set up the development environment:
+Containers usually do not have the `module` command. Do not set `PYTHON_MODULE`.
 
 ```bash
-pip install -e ".[dev,train]"
+export HF_TOKEN="your_huggingface_token_here"
+
+PYTHON_BIN=python3 bash scripts/setup_venv.sh .venv
+source .venv/bin/activate
 ```
 
-To format the code:
+Verify:
 
 ```bash
-ufmt format .
+.venv/bin/python --version
+.venv/bin/python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+.venv/bin/python -c "import submitit, cv2, einops, decord; print('extra imports OK')"
 ```
 
-## Contributing
+For RunPod, keep the repository, dataset, checkpoints, and logs under `/workspace`, not `/root`, if possible.
 
-See [contributing](CONTRIBUTING.md) and the
-[code of conduct](CODE_OF_CONDUCT.md).
+## Empire AI `libcrypt.so.2` workaround
 
-## License
+Some Empire AI GPU nodes may fail with:
 
-This project is licensed under the SAM License - see the [LICENSE](LICENSE) file
-for details.
-
-## Acknowledgements
-
-We would like to thank the following people for their contributions to the SAM 3 project: Alex He, Alexander Kirillov,
-Alyssa Newcomb, Ana Paula Kirschner Mofarrej, Andrea Madotto, Andrew Westbury, Ashley Gabriel, Azita Shokpour,
-Ben Samples, Bernie Huang, Carleigh Wood, Ching-Feng Yeh, Christian Puhrsch, Claudette Ward, Daniel Bolya,
-Daniel Li, Facundo Figueroa, Fazila Vhora, George Orlin, Hanzi Mao, Helen Klein, Hu Xu, Ida Cheng, Jake Kinney,
-Jiale Zhi, Jo Sampaio, Joel Schlosser, Justin Johnson, Kai Brown, Karen Bergan, Karla Martucci, Kenny Lehmann,
-Maddie Mintz, Mallika Malhotra, Matt Ward, Michelle Chan, Michelle Restrepo, Miranda Hartley, Muhammad Maaz,
-Nisha Deo, Peter Park, Phillip Thomas, Raghu Nayani, Rene Martinez Doehner, Robbie Adkins, Ross Girshik, Sasha
-Mitts, Shashank Jain, Spencer Whitehead, Ty Toledano, Valentin Gabeur, Vincent Cho, Vivian Lee, William Ngan,
-Xuehai He, Yael Yungster, Ziqi Pang, Ziyi Dou, Zoe Quake.
-
-## Citing SAM 3
-
-If you use SAM 3 or the SA-Co dataset in your research, please use the following BibTeX entry.
-
-```bibtex
-@misc{carion2025sam3segmentconcepts,
-      title={SAM 3: Segment Anything with Concepts},
-      author={Nicolas Carion and Laura Gustafson and Yuan-Ting Hu and Shoubhik Debnath and Ronghang Hu and Didac Suris and Chaitanya Ryali and Kalyan Vasudev Alwala and Haitham Khedr and Andrew Huang and Jie Lei and Tengyu Ma and Baishan Guo and Arpit Kalla and Markus Marks and Joseph Greer and Meng Wang and Peize Sun and Roman Rädle and Triantafyllos Afouras and Effrosyni Mavroudi and Katherine Xu and Tsung-Han Wu and Yu Zhou and Liliane Momeni and Rishi Hazra and Shuangrui Ding and Sagar Vaze and Francois Porcher and Feng Li and Siyuan Li and Aishwarya Kamath and Ho Kei Cheng and Piotr Dollár and Nikhila Ravi and Kate Saenko and Pengchuan Zhang and Christoph Feichtenhofer},
-      year={2025},
-      eprint={2511.16719},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV},
-      url={https://arxiv.org/abs/2511.16719},
-}
+```text
+error while loading shared libraries: libcrypt.so.2: cannot open shared object file: No such file or directory
 ```
+
+If that happens, copy `libcrypt.so.2` into a local library folder from the login node:
+
+```bash
+cd ~/sam3_irrigation_canals
+
+mkdir -p local_lib
+cp -L /cm/images/default-image/usr/lib64/libcrypt.so.2 local_lib/
+cp -L /cm/images/default-image/usr/lib64/libcrypt.so.2.0.0 local_lib/ 2>/dev/null || true
+```
+
+Then make sure your Slurm file includes:
+
+```bash
+export LD_LIBRARY_PATH="$REPO_DIR/local_lib:${LD_LIBRARY_PATH:-}"
+```
+
+You can test the venv Python with:
+
+```bash
+REPO_DIR="/path/to/sam3_irrigation_canals"
+PYTHON="$REPO_DIR/.venv/bin/python"
+
+module load python39
+export LD_LIBRARY_PATH="$REPO_DIR/local_lib:${LD_LIBRARY_PATH:-}"
+
+ldd "$PYTHON" | grep -E "libcrypt|not found"
+```
+
+A working result should show something like:
+
+```text
+libcrypt.so.2 => /path/to/sam3_irrigation_canals/local_lib/libcrypt.so.2
+```
+
+## Dataset layout
+
+Put the dataset under:
+
+```text
+sam3/train/data/irrigation_canal/
+├── train/
+│   ├── images/
+│   └── masks/
+├── val/
+│   ├── images/
+│   └── masks/
+└── test/
+    ├── images/
+    └── masks/
+```
+
+Masks should be single-channel binary images:
+
+```text
+0   = background
+> 0 = irrigation canal
+```
+
+Images and masks must share the same filename stem:
+
+```text
+images/Canal_ML_Chip_0000.png
+masks/Canal_ML_Chip_0000.png
+```
+
+or:
+
+```text
+images/Canal_ML_Chip_0000.jpg
+masks/Canal_ML_Chip_0000.png
+```
+
+The link to the dataset used for preliminary finetuning: https://drive.google.com/drive/folders/1WIyMazltltBUvg19kxCtEgHauGRWrOI6?usp=sharing
+
+## Optional: split layered TIFF chips
+
+If your raw `.tif` files contain RGB image channels plus a final binary-mask channel, split them first:
+
+```bash
+python scripts/split_tif_rgba_masks.py \
+  --input-dir sam3/train/data/irrigation_layered \
+  --output-dir sam3/train/data/irrigation_canal/train \
+  --workers 4 \
+  --image-format png \
+  --png-compress-level 1
+```
+
+For smaller RGB images, use JPEG for images while keeping masks as PNG:
+
+```bash
+python scripts/split_tif_rgba_masks.py \
+  --input-dir sam3/train/data/irrigation_layered \
+  --output-dir sam3/train/data/irrigation_canal/train \
+  --workers 4 \
+  --image-format jpg \
+  --jpg-quality 95
+```
+
+Masks are always saved as PNG.
+
+## Convert masks to COCO
+
+SAM3 training expects COCO-style annotations. Convert each split with:
+
+```bash
+python scripts/convert_masks_to_coco.py \
+  --dataset_path sam3/train/data/irrigation_canal \
+  --category_name "irrigation canal" \
+  --image_extensions jpg png \
+  --mask_extensions png \
+  --per-component \
+  --min-component-area 100
+```
+
+This writes:
+
+```text
+sam3/train/data/irrigation_canal/train/_annotations.coco.json
+sam3/train/data/irrigation_canal/val/_annotations.coco.json
+sam3/train/data/irrigation_canal/test/_annotations.coco.json
+```
+
+Use `--per-component` when the canal mask contains many disconnected canal segments. It produces one annotation per connected component, which gives SAM3 more localized box/mask targets.
+
+## Training directly
+
+The main config is:
+
+```text
+sam3/train/configs/irrigation_canal/irrigation_canal_finetune.yaml
+```
+
+Run from the repository root:
+
+```bash
+export PYTHONUNBUFFERED=1
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+.venv/bin/python -m sam3.train.train \
+  --config configs/irrigation_canal/irrigation_canal_finetune
+```
+
+The config name is relative to `sam3/train/`, so do not include `sam3/train/` or `.yaml`.
+
+Important config fields:
+
+```yaml
+scratch:
+  train_batch_size: 4
+  val_batch_size: 2
+  lr_scale: 0.02
+
+trainer:
+  max_epochs: 20
+```
+
+Reduce `train_batch_size` if you hit CUDA OOM. Reduce `lr_scale` if training becomes unstable.
+
+## Slurm training
+
+Edit `REPO_DIR` in `train_irrigation.slurm` to point to your cloned repository:
+
+```bash
+REPO_DIR="/path/to/sam3_irrigation_canals"
+```
+
+For Empire AI, the Slurm script should include:
+
+```bash
+module load python39
+export LD_LIBRARY_PATH="$REPO_DIR/local_lib:${LD_LIBRARY_PATH:-}"
+export PYTHONUNBUFFERED=1
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+```
+
+Submit from the repository root:
+
+```bash
+mkdir -p logs
+sbatch scripts/train_irrigation.slurm
+```
+
+The Slurm script should call the venv Python directly:
+
+```bash
+"$PYTHON" -m sam3.train.train \
+  --config "$CONFIG_NAME"
+```
+
+Calling `.venv/bin/python` directly is more reliable than relying on `source .venv/bin/activate` inside batch jobs.
+
+## Evaluation
+
+Evaluate a fine-tuned checkpoint on a split:
+
+```bash
+python scripts/evaluate_test.py \
+  --dataset-root sam3/train/data/irrigation_canal \
+  --split test \
+  --text-prompt "irrigation canal" \
+  --checkpoint-path experiments/irrigation_canal/checkpoints/checkpoint.pt \
+  --num-vis 10 \
+  --save-path canal_predictions.png
+```
+
+The evaluator reports:
+
+```text
+test_loss
+test_mean_iou
+test_global_iou
+test_pixel_accuracy
+```
+
+For canal segmentation, **IoU is the main metric to emphasize**. Pixel accuracy can be misleading because most pixels are background.
+
+Evaluate fresh SAM3 weights instead of a fine-tuned checkpoint:
+
+```bash
+python scripts/evaluate_test.py \
+  --dataset-root sam3/train/data/irrigation_canal \
+  --split test \
+  --text-prompt "irrigation canal" \
+  --load-from-hf
+```
+
+## Plot training logs
+
+```bash
+python scripts/plot_logs.py \
+  --log-dir experiments/irrigation_canal/logs
+```
+
+This reads:
+
+```text
+experiments/irrigation_canal/logs/train_stats.json
+experiments/irrigation_canal/logs/val_stats.json
+```
+
+and saves loss/validation curves.
+
+## Outputs
+
+A training run writes to:
+
+```text
+experiments/irrigation_canal/
+├── config.yaml
+├── config_resolved.yaml
+├── checkpoints/
+│   ├── checkpoint.pt
+│   ├── checkpoint_1.pt
+│   ├── checkpoint_2.pt
+│   └── ...
+├── logs/
+│   ├── train_stats.json
+│   ├── val_stats.json
+│   └── log.txt
+└── tensorboard/
+```
+
+Use the checkpoint with the best validation metric, not necessarily the final checkpoint.
+
+For detection-style validation, the main metric is usually:
+
+```text
+Meters_train/val_irrigation canal/detection/coco_eval_bbox_AP
+```
+
+For the final canal segmentation report, emphasize:
+
+```text
+test_mean_iou
+test_global_iou
+test_pixel_accuracy
+```
+
+## Multi-GPU training status
+
+Use **single-GPU training** for this repository.
+
+Multi-GPU training with PyTorch DistributedDataParallel was tested but is not currently reliable for this SAM3 fine-tuning setup. The run was able to start on multiple GPUs, but it crashed during training with a DDP reduction error:
+
+```text
+RuntimeError: Expected to have finished reduction in the prior iteration before starting a new one.
+This error indicates that your module has parameters that were not used in producing loss.
+```
+
+## Troubleshooting
+
+### Hugging Face 401 Unauthorized
+
+If training fails with:
+
+```text
+Cannot access gated repo for url https://huggingface.co/facebook/sam3
+Access to model facebook/sam3 is restricted
+```
+
+make sure you have accepted access to `facebook/sam3` on Hugging Face and set:
+
+```bash
+export HF_TOKEN="your_huggingface_token_here"
+```
+
+Then test:
+
+```bash
+python - <<'PY'
+from huggingface_hub import hf_hub_download
+print(hf_hub_download(repo_id="facebook/sam3", filename="config.json"))
+PY
+```
+
+### Slurm cannot find `torch`, `submitit`, or other packages
+
+If the login node works but the Slurm job fails with:
+
+```text
+ModuleNotFoundError: No module named 'torch'
+```
+
+then the job is probably using the wrong Python. Make sure the Slurm file uses the venv Python directly:
+
+```bash
+PYTHON="/path/to/repo/.venv/bin/python"
+```
+
+Check the venv Python:
+
+```bash
+ls -l .venv/bin/python*
+readlink -f .venv/bin/python
+cat .venv/pyvenv.cfg
+```
+
+Recreate the venv if needed:
+
+```bash
+rm -rf .venv
+PYTHON_MODULE=python39 PYTHON_BIN=python3.9 bash scripts/setup_venv.sh .venv
+```
+
+### `libcrypt.so.2` missing on Empire AI
+
+If the GPU job fails with:
+
+```text
+error while loading shared libraries: libcrypt.so.2
+```
+
+copy `libcrypt.so.2` into `local_lib`:
+
+```bash
+mkdir -p local_lib
+cp -L /cm/images/default-image/usr/lib64/libcrypt.so.2 local_lib/
+cp -L /cm/images/default-image/usr/lib64/libcrypt.so.2.0.0 local_lib/ 2>/dev/null || true
+```
+
+Then add this to the Slurm job before running Python:
+
+```bash
+export LD_LIBRARY_PATH="$REPO_DIR/local_lib:${LD_LIBRARY_PATH:-}"
+```
+
+### CUDA out of memory
+
+Reduce batch size:
+
+```yaml
+scratch:
+  train_batch_size: 2
+```
+
+You can also keep:
+
+```bash
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+```
+
+### Disk quota exceeded during checkpoint saving
+
+If training fails while saving a checkpoint:
+
+```text
+OSError: [Errno 122] Disk quota exceeded
+```
+
+free space or increase the volume/disk size. On RunPod, increase the **volume disk** if the repo is under `/workspace`.
+
+Check disk usage:
+
+```bash
+df -h / /root /workspace
+du -h --max-depth=1 /workspace | sort -h
+```
+
+Delete large archives after extraction:
+
+```bash
+rm -f sam3/train/data/irrigation_canal.tar
+rm -f sam3/train/data/irrigation_canal.tar.zst
+```
+
+### NaN or unstable training
+
+Lower the learning-rate scale:
+
+```yaml
+scratch:
+  lr_scale: 0.01
+```
+
+Also use the best validation checkpoint rather than assuming the final checkpoint is best.
+
+### No matching image/mask pairs
+
+Make sure image and mask stems match:
+
+```text
+images/Canal_ML_Chip_0000.jpg
+masks/Canal_ML_Chip_0000.png
+```
+
+Then rerun COCO conversion.
+
+## Notes
+
+- Keep raw datasets, checkpoints, archives, and virtual environments out of Git.
+- Do not commit Hugging Face tokens or RunPod API keys.
+- Use `.gitignore` for `.venv/`, `experiments/`, data folders, checkpoints, and large archives.
+- For reports, include IoU metrics in addition to pixel accuracy.

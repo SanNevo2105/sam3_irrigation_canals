@@ -550,22 +550,52 @@ class TransformerDecoder(nn.Module):
 
             # iter update
             if self.box_refine:
+                # Diagnostic: check if reference_boxes are saturating toward 0/1
+                # which would cause inverse_sigmoid to produce ±inf
+                _n_sat = ((reference_boxes <= 0.0) | (reference_boxes >= 1.0)).sum().item()
+                if _n_sat > 0:
+                    import logging as _log
+                    _log.getLogger(__name__).warning(
+                        f"[DECODER layer {layer_idx}] {_n_sat} reference_box coord(s) "
+                        f"saturated to 0/1 before inverse_sigmoid "
+                        f"(min={reference_boxes.min().item():.6f}, "
+                        f"max={reference_boxes.max().item():.6f}); clamping."
+                    )
+                reference_boxes = reference_boxes.clamp(min=0.01, max=0.99)
+                # Diagnostic: check if output (hidden states) has non-finite values
+                _n_nonfinite_hs = (~torch.isfinite(output)).sum().item()
+                if _n_nonfinite_hs > 0:
+                    import logging as _log2
+                    _log2.getLogger(__name__).warning(
+                        f"[DECODER layer {layer_idx}] output (hs) has {_n_nonfinite_hs} "
+                        f"non-finite value(s) — BF16 overflow in attention."
+                    )
                 reference_before_sigmoid = inverse_sigmoid(reference_boxes)
-                if box_head_trk is None:
-                    # delta_unsig = self.bbox_embed(output)
-                    if not self.use_normed_output_consistently:
-                        delta_unsig = box_head(output)
+                # Run bbox_embed MLP in FP32 to prevent BF16 overflow in the
+                # box regression head, which is the root cause of the NaN
+                # cascade observed during fine-tuning on datasets with
+                # near-full-image ground-truth boxes.
+                with torch.amp.autocast(device_type="cuda", enabled=False):
+                    if box_head_trk is None:
+                        # delta_unsig = self.bbox_embed(output)
+                        if not self.use_normed_output_consistently:
+                            delta_unsig = box_head(output.float())
+                        else:
+                            delta_unsig = box_head(out_norm(output).float())
                     else:
-                        delta_unsig = box_head(out_norm(output))
-                else:
-                    # box_head_trk use a separate box head for tracking queries
-                    Q_det = decoder_extra_kwargs["Q_det"]
-                    assert output.size(0) >= Q_det
-                    delta_unsig_det = self.bbox_embed(output[:Q_det])
-                    delta_unsig_trk = box_head_trk(output[Q_det:])
-                    delta_unsig = torch.cat([delta_unsig_det, delta_unsig_trk], dim=0)
-                outputs_unsig = delta_unsig + reference_before_sigmoid
-                new_reference_points = outputs_unsig.sigmoid()
+                        # box_head_trk use a separate box head for tracking queries
+                        Q_det = decoder_extra_kwargs["Q_det"]
+                        assert output.size(0) >= Q_det
+                        delta_unsig_det = self.bbox_embed(output[:Q_det].float())
+                        delta_unsig_trk = box_head_trk(output[Q_det:].float())
+                        delta_unsig = torch.cat([delta_unsig_det, delta_unsig_trk], dim=0)
+                    outputs_unsig = delta_unsig + reference_before_sigmoid.float()
+                    # Clamp predicted box coords to (0.01, 0.99) in sigmoid-space
+                    # (≈ logit range [-4.6, +4.6]) to prevent iterative refinement
+                    # from drifting beyond image boundaries and overflowing BF16.
+                    new_reference_points = outputs_unsig.sigmoid().clamp(min=0.01, max=0.99)
+                # Cast back to the working dtype of the rest of the decoder
+                new_reference_points = new_reference_points.to(reference_boxes.dtype)
 
                 reference_boxes = new_reference_points.detach()
                 if layer_idx != self.num_layers - 1:

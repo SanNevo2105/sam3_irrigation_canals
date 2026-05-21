@@ -1,0 +1,464 @@
+# @package _global_
+defaults:
+  - _self_
+
+# ============================================================================
+# Paths Configuration — update these to match your environment
+# ============================================================================
+paths:
+  # Directory containing the raw TIFF images (road/train/, road/val/, road/test/)
+  images_root: /mnt/home/tkomolkhetruck/sam3_irrigation_canals/sam3/train/data/road_global
+  # Directory containing the COCO JSON annotations (road_global_coco/train/, road_global_coco/val/, road_global_coco/test/)
+  coco_root: /mnt/home/tkomolkhetruck/sam3_irrigation_canals/sam3/train/data/road_global
+  experiment_log_dir: /mnt/home/tkomolkhetruck/sam3_irrigation_canals/experiments/road_global
+  bpe_path: /mnt/home/tkomolkhetruck/sam3_irrigation_canals/sam3/assets/bpe_simple_vocab_16e6.txt.gz
+  # After the first successful HF download, the checkpoint is cached at:
+  #   ~/.cache/huggingface/hub/models--facebook--sam3/snapshots/<hash>/sam3.pt
+  # Set checkpoint_path to that absolute path to skip re-downloading on subsequent runs.
+  # Leave as null to let the model builder download it automatically from HuggingFace.
+  checkpoint_path: null
+
+# ============================================================================
+# Dataset configuration
+# ============================================================================
+road_global_train:
+
+  # Training transforms pipeline
+  train_transforms:
+    - _target_: sam3.train.transforms.basic_for_api.ComposeAPI
+      transforms:
+        - _target_: sam3.train.transforms.filter_query_transforms.FlexibleFilterFindGetQueries
+          query_filter:
+            _target_: sam3.train.transforms.filter_query_transforms.FilterCrowds
+        - _target_: sam3.train.transforms.point_sampling.RandomizeInputBbox
+          box_noise_std: 0.1
+          box_noise_max: 20
+        - _target_: sam3.train.transforms.segmentation.DecodeRle
+        # ── Geometric augmentation ─────────────────────────────────────────
+        # RandomHorizontalFlip: fully mask/box/query-safe (hflip() in
+        # basic_for_api.py mirrors XYXY boxes, flips obj.segment and
+        # query.input_bbox correctly).  Aerial road imagery has no dominant
+        # left/right orientation, so p=0.5 is appropriate.
+        - _target_: sam3.train.transforms.basic_for_api.RandomHorizontalFlip
+          consistent_transform: ${scratch.consistent_transform}
+          p: 0.5
+        # ── Photometric augmentation ────────────────────────────────────────
+        # ColorJitter: image-only transform — masks and boxes are untouched.
+        # Mild params (±20% brightness/contrast, ±10% saturation, no hue
+        # shift) improve robustness to acquisition-time lighting variation
+        # across the global road dataset without distorting road colour cues.
+        - _target_: sam3.train.transforms.basic_for_api.ColorJitter
+          consistent_transform: ${scratch.consistent_transform}
+          brightness: 0.2
+          contrast: 0.2
+          saturation: 0.1
+          hue: null
+        - _target_: sam3.train.transforms.basic_for_api.RandomResizeAPI
+          sizes:
+            _target_: sam3.train.transforms.basic.get_random_resize_scales
+            size: ${scratch.resolution}
+            min_size: 480
+            rounded: false
+          max_size:
+            _target_: sam3.train.transforms.basic.get_random_resize_max_size
+            size: ${scratch.resolution}
+          square: true
+          consistent_transform: ${scratch.consistent_transform}
+        - _target_: sam3.train.transforms.basic_for_api.PadToSizeAPI
+          size: ${scratch.resolution}
+          consistent_transform: ${scratch.consistent_transform}
+        - _target_: sam3.train.transforms.basic_for_api.ToTensorAPI
+        - _target_: sam3.train.transforms.filter_query_transforms.FlexibleFilterFindGetQueries
+          query_filter:
+            _target_: sam3.train.transforms.filter_query_transforms.FilterEmptyTargets
+        - _target_: sam3.train.transforms.basic_for_api.NormalizeAPI
+          mean: ${scratch.train_norm_mean}
+          std: ${scratch.train_norm_std}
+        - _target_: sam3.train.transforms.filter_query_transforms.FlexibleFilterFindGetQueries
+          query_filter:
+            _target_: sam3.train.transforms.filter_query_transforms.FilterEmptyTargets
+    - _target_: sam3.train.transforms.filter_query_transforms.FlexibleFilterFindGetQueries
+      query_filter:
+        _target_: sam3.train.transforms.filter_query_transforms.FilterFindQueriesWithTooManyOut
+        max_num_objects: ${scratch.max_ann_per_img}
+
+  # Validation transforms pipeline
+  val_transforms:
+  - _target_: sam3.train.transforms.basic_for_api.ComposeAPI
+    transforms:
+      - _target_: sam3.train.transforms.segmentation.DecodeRle
+      - _target_: sam3.train.transforms.basic_for_api.RandomResizeAPI
+        sizes: ${scratch.resolution}
+        max_size:
+          _target_: sam3.train.transforms.basic.get_random_resize_max_size
+          size: ${scratch.resolution}
+        square: true
+        consistent_transform: False
+      - _target_: sam3.train.transforms.basic_for_api.ToTensorAPI
+      - _target_: sam3.train.transforms.basic_for_api.NormalizeAPI
+        mean: ${scratch.val_norm_mean}
+        std: ${scratch.val_norm_std}
+
+  # Loss — bounding box + segmentation mask
+  loss:
+    _target_: sam3.train.loss.sam3_loss.Sam3LossWrapper
+    matcher: ${scratch.matcher}
+    o2m_weight: 2.0
+    o2m_matcher:
+      _target_: sam3.train.matcher.BinaryOneToManyMatcher
+      alpha: 0.3
+      threshold: 0.4
+      topk: 4
+    use_o2m_matcher_on_o2m_aux: false
+    loss_fns_find:
+      - _target_: sam3.train.loss.loss_fns.Boxes
+        weight_dict:
+          loss_bbox: 5.0
+          loss_giou: 2.0
+      - _target_: sam3.train.loss.loss_fns.IABCEMdetr
+        weak_loss: False
+        weight_dict:
+          loss_ce: 10.0
+          presence_loss: 10.0
+        pos_weight: 10.0
+        alpha: 0.25
+        gamma: 2
+        use_presence: True
+        pos_focal: false
+        pad_n_queries: 200
+        pad_scale_pos: 1.0
+      - _target_: sam3.train.loss.loss_fns.Masks
+        focal_alpha: 0.25
+        focal_gamma: 2.0
+        weight_dict:
+          # Reduced from 200.0/10.0 → 20.0/5.0 → 5.0: repeated BF16 NaN
+          # explosions (job 940869 epoch 5, job 942940 epoch 3 step 1050) driven
+          # by loss_mask×o2m_weight=40 effective multiplier. 5.0×2=10 is safe.
+          loss_mask: 5.0
+          loss_dice: 5.0
+        compute_aux: false
+    loss_fn_semantic_seg: null
+    scale_by_find_batch_size: ${scratch.scale_by_find_batch_size}
+
+# ============================================================================
+# Helper parameters
+# ============================================================================
+scratch:
+  enable_segmentation: True   # Must be True for binary mask training
+
+  # Model parameters
+  d_model: 256
+  pos_embed:
+    _target_: sam3.model.position_encoding.PositionEmbeddingSine
+    num_pos_feats: ${scratch.d_model}
+    normalize: true
+    scale: null
+    temperature: 10000
+
+  # Box/presence processing
+  use_presence_eval: True
+  original_box_postprocessor:
+    _target_: sam3.eval.postprocessors.PostProcessImage
+    max_dets_per_img: -1
+    use_original_ids: true
+    use_original_sizes_box: true
+    use_presence: ${scratch.use_presence_eval}
+
+  # Matcher configuration
+  matcher:
+    _target_: sam3.train.matcher.BinaryHungarianMatcherV2
+    focal: true
+    cost_class: 2.0
+    cost_bbox: 5.0
+    cost_giou: 2.0
+    alpha: 0.25
+    gamma: 2
+    stable: False
+  scale_by_find_batch_size: True
+
+  # Image processing
+  # 1008 is required — lower values are not compatible with the rotary positional encoding.
+  resolution: 1008
+  consistent_transform: False
+  max_ann_per_img: 200
+
+  # Normalisation — ImageNet stats matching SAM3 pretraining distribution.
+  # These are the values the pretrained backbone was trained with; deviating
+  # from them shifts the input distribution and slows early-epoch convergence.
+  train_norm_mean: [0.485, 0.456, 0.406]
+  train_norm_std:  [0.229, 0.224, 0.225]
+  val_norm_mean:   [0.485, 0.456, 0.406]
+  val_norm_std:    [0.229, 0.224, 0.225]
+
+  # DataLoader workers / epochs
+  # H100 80GB: increase workers to keep the GPU fed — TIFF decoding is CPU-bound
+  num_train_workers: 4 # set to 0 for debugging; increase to 4 or more for full training runs
+  num_val_workers: 4 # set to 0 for debugging; increase to 4 or more for full training runs
+  max_data_epochs: 20
+  target_epoch_size: 1500
+  hybrid_repeats: 1
+  context_length: 2
+  gather_pred_via_filesys: false
+
+  # Learning rates
+  # lr_scale reduced from 0.05 → 0.02:
+  #   road_global produces 2.32 annotations/image vs road's ~1.0.  With batch
+  #   size 4, the effective gradient norm for box/GIoU losses scales with the
+  #   number of matched pairs (~9.3 vs ~4 per batch).  At lr_scale=0.05 the
+  #   parameter updates are ~2.3× larger than on the road dataset, increasing
+  #   the probability of a BF16 overflow on thin road-segment boxes.
+  #   Reducing to lr_scale=0.02 (×0.4) compensates for the higher annotation
+  #   density and widens the safety margin alongside the clamp(min=1e-2) fix.
+  #     lr_transformer:      4e-5 → 1.6e-5
+  #     lr_vision_backbone:  1.25e-5 → 5.0e-6
+  #     lr_language_backbone: 2.5e-6 → 1.0e-6
+  lr_scale: 0.02
+  lr_transformer:      ${times:8e-4,${scratch.lr_scale}}
+  lr_vision_backbone:  ${times:2.5e-4,${scratch.lr_scale}}
+  lr_language_backbone: ${times:5e-5,${scratch.lr_scale}}
+  lrd_vision_backbone: 0.9
+  wd: 0.1
+  # Scheduler steps are in optimizer steps (not epochs).
+  # With target_epoch_size=1500 and train_batch_size=4, one epoch ≈ 375 steps.
+  # Warmup: 1 epoch (unchanged).
+  # Cooldown extended from 750 → 2250 steps (2 → 6 epochs):
+  #   The original cooldown finished at epoch 2, leaving epochs 3-19 at
+  #   near-peak LR with only slow inverse-sqrt decay.  A 6-epoch cooldown
+  #   actively drives the LR down through the critical post-convergence window,
+  #   directly reducing the probability of gradient spikes.
+  scheduler_timescale: 375
+  scheduler_warmup: 375
+  scheduler_cooldown: 2250
+
+  # Batch / collation
+  # H100 80GB HBM3: 4× batch comfortably fits four 1008px BF16 images
+  val_batch_size: 2
+  collate_fn_val:
+    _target_: sam3.train.data.collator.collate_fn_api
+    _partial_: true
+    repeats: ${scratch.hybrid_repeats}
+    dict_key: road
+    with_seg_masks: ${scratch.enable_segmentation}
+
+  # No gradient accumulation needed — large batch covers sufficient diversity
+  gradient_accumulation_steps: 1
+  train_batch_size: 4
+  collate_fn:
+    _target_: sam3.train.data.collator.collate_fn_api
+    _partial_: true
+    repeats: ${scratch.hybrid_repeats}
+    dict_key: all
+    with_seg_masks: ${scratch.enable_segmentation}
+
+# ============================================================================
+# Trainer Configuration
+# ============================================================================
+trainer:
+
+  _target_: sam3.train.trainer.Trainer
+  skip_saving_ckpts: false
+  empty_gpu_mem_cache_after_eval: True
+  skip_first_val: True
+  max_epochs: 20
+  accelerator: cuda
+  seed_value: 42
+  val_epoch_freq: 1
+  mode: train
+  gradient_accumulation_steps: ${scratch.gradient_accumulation_steps}
+
+  # disabled for 1 gpu
+  distributed:
+    backend: null # nccl
+    # find_unused_parameters: True
+    # gradient_as_bucket_view: True
+
+  loss:
+    all: ${road_global_train.loss}
+    default:
+      _target_: sam3.train.loss.sam3_loss.DummyLoss
+
+  data:
+    train:
+      _target_: sam3.train.data.torch_dataset.TorchDataset
+      dataset:
+        _target_: sam3.train.data.sam3_image_dataset.Sam3ImageDataset
+        transforms: ${road_global_train.train_transforms}
+        load_segmentation: ${scratch.enable_segmentation}
+        max_ann_per_img: 500000
+        multiplier: 1
+        max_train_queries: 50000
+        max_val_queries: 50000
+        training: true
+        use_caching: False
+        # TIFF images live directly in road_global/train/ (no images/ subdir)
+        img_folder: ${paths.images_root}/train/images/
+        # COCO JSON generated by convert_masks_to_coco.py
+        ann_file: ${paths.coco_root}/train/_annotations.coco.json
+
+      shuffle: True
+      batch_size: ${scratch.train_batch_size}
+      num_workers: ${scratch.num_train_workers}
+      pin_memory: True
+      drop_last: True
+      collate_fn: ${scratch.collate_fn}
+
+    val:
+      _target_: sam3.train.data.torch_dataset.TorchDataset
+      dataset:
+        _target_: sam3.train.data.sam3_image_dataset.Sam3ImageDataset
+        load_segmentation: ${scratch.enable_segmentation}
+        coco_json_loader:
+          _target_: sam3.train.data.coco_json_loaders.COCO_FROM_JSON
+          include_negatives: false
+          category_chunk_size: 1
+          _partial_: true
+        # val = original val (14 imgs) + test (49 imgs) merged by
+        # scripts/merge_coco_splits.py — gives a reliable 63-image eval signal.
+        img_folder: ${paths.images_root}/val/images/
+        ann_file: ${paths.coco_root}/val/_annotations.coco.json
+        transforms: ${road_global_train.val_transforms}
+        max_ann_per_img: 100000
+        multiplier: 1
+        training: false
+
+      shuffle: False
+      batch_size: ${scratch.val_batch_size}
+      num_workers: ${scratch.num_val_workers}
+      pin_memory: True
+      drop_last: False
+      collate_fn: ${scratch.collate_fn_val}
+
+  model:
+    _target_: sam3.model_builder.build_sam3_image_model
+    bpe_path: ${paths.bpe_path}
+    device: cuda
+    eval_mode: false
+    enable_segmentation: ${scratch.enable_segmentation}
+    checkpoint_path: ${paths.checkpoint_path}
+    load_from_HF: true
+
+  meters:
+    val:
+      road:
+        detection:
+          _target_: sam3.eval.coco_writer.PredictionDumper
+          iou_type: "bbox"
+          dump_dir: ${launcher.experiment_log_dir}/dumps/road_global
+          merge_predictions: True
+          postprocessor: ${scratch.original_box_postprocessor}
+          gather_pred_via_filesys: ${scratch.gather_pred_via_filesys}
+          maxdets: 100
+          pred_file_evaluators:
+            - _target_: sam3.eval.coco_eval_offline.CocoEvaluatorOfflineWithPredFileEvaluators
+              gt_path: ${paths.coco_root}/val/_annotations.coco.json
+              tide: False
+              iou_type: "bbox"
+
+  optim:
+    amp:
+      enabled: True
+      # H100 has native BF16 tensor cores — faster and more memory-efficient than FP16
+      amp_dtype: bfloat16
+
+    optimizer:
+      _target_: torch.optim.AdamW
+      # Fallback LR for parameter groups not explicitly matched by the
+      # scheduler param_names patterns below (backbone.vision_backbone.*,
+      # backbone.language_backbone.*).  The transformer head and all other
+      # named groups are overridden by the scheduler options — this 1e-6
+      # only applies to any remaining ungrouped parameters (e.g. output
+      # projection biases not caught by the bias pattern).
+      lr: 1e-6
+      
+
+    gradient_clip:
+      _target_: sam3.train.optim.optimizer.GradientClipper
+      # max_norm lowered from 0.5 → 0.1:
+      #   job 942940 epoch 3 step 1050 showed NaN explosion; 0.5 was too
+      #   permissive with high loss weights. 0.1 acts as a hard BF16 safety net.
+      #   Original comment (raised 0.1→0.5) was wrong — clipping too loosely
+      #   almost every gradient vector, severely distorting gradient directions.
+      #   This paradoxically increases instability: the optimizer follows
+      #   heavily distorted directions that can produce non-descent steps.
+      #   0.5 is still conservative but preserves gradient direction faithfully
+      #   on well-behaved batches while still capping true spikes.
+      max_norm: 0.1
+      norm_type: 2
+
+    param_group_modifiers:
+      - _target_: sam3.train.optim.optimizer.layer_decay_param_modifier
+        _partial_: True
+        layer_decay_value: ${scratch.lrd_vision_backbone}
+        apply_to: 'backbone.vision_backbone.trunk'
+        overrides:
+          - pattern: '*pos_embed*'
+            value: 1.0
+
+    options:
+      lr:
+        - scheduler:
+            _target_: sam3.train.optim.schedulers.InverseSquareRootParamScheduler
+            base_lr: ${scratch.lr_transformer}
+            timescale: ${scratch.scheduler_timescale}
+            warmup_steps: ${scratch.scheduler_warmup}
+            cooldown_steps: ${scratch.scheduler_cooldown}
+        - scheduler:
+            _target_: sam3.train.optim.schedulers.InverseSquareRootParamScheduler
+            base_lr: ${scratch.lr_vision_backbone}
+            timescale: ${scratch.scheduler_timescale}
+            warmup_steps: ${scratch.scheduler_warmup}
+            cooldown_steps: ${scratch.scheduler_cooldown}
+          param_names:
+            - 'backbone.vision_backbone.*'
+        - scheduler:
+            _target_: sam3.train.optim.schedulers.InverseSquareRootParamScheduler
+            base_lr: ${scratch.lr_language_backbone}
+            timescale: ${scratch.scheduler_timescale}
+            warmup_steps: ${scratch.scheduler_warmup}
+            cooldown_steps: ${scratch.scheduler_cooldown}
+          param_names:
+            - 'backbone.language_backbone.*'
+
+      weight_decay:
+        - scheduler:
+            _target_: fvcore.common.param_scheduler.ConstantParamScheduler
+            value: ${scratch.wd}
+        - scheduler:
+            _target_: fvcore.common.param_scheduler.ConstantParamScheduler
+            value: 0.0
+          param_names:
+            - '*bias*'
+          module_cls_names: ['torch.nn.LayerNorm']
+
+  checkpoint:
+    save_dir: ${launcher.experiment_log_dir}/checkpoints
+    save_freq: 1   # save every epoch
+
+  logging:
+    tensorboard_writer:
+      _target_: sam3.train.utils.logger.make_tensorboard_logger
+      log_dir: ${launcher.experiment_log_dir}/tensorboard
+      flush_secs: 120
+      should_log: True
+    wandb_writer: null
+    log_dir: ${launcher.experiment_log_dir}/logs
+    log_freq: 10
+
+# ============================================================================
+# Launcher and Submitit Configuration
+# ============================================================================
+launcher:
+  num_nodes: 1
+  gpus_per_node: 1        # Single H100 80GB HBM3
+  experiment_log_dir: ${paths.experiment_log_dir}
+  multiprocessing_context: forkserver
+
+submitit:
+  account: null
+  partition: null
+  qos: null
+  timeout_hour: 72
+  use_cluster: False      # Set to True when submitting to a SLURM cluster
+  cpus_per_task: 16       # More CPUs to feed 12 train + 4 val workers
+  port_range: [10000, 65000]
+  constraint: null
