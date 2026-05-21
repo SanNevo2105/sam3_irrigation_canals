@@ -12,7 +12,35 @@ Fine-tune SAM3 on satellite imagery for **binary irrigation-canal segmentation**
   - global IoU
   - pixel accuracy
   - approximate BCE loss
+- Predicts binary masks of irrigation canals for a provided dataset and checkpoint.
 - Provides utilities for splitting layered RGBA TIFF chips into RGB images and binary masks.
+
+## Index
+
+- [Clone the repository](#clone-the-repository)
+- [Hugging Face access](#hugging-face-access)
+- [Environment setup](#environment-setup)
+  - [HPC clusters, for example Empire AI](#hpc-clusters-for-example-empire-ai)
+  - [Containers, for example RunPod](#containers-for-example-runpod)
+- [Dataset layout](#dataset-layout)
+- [Optional: split layered TIFF chips](#optional-split-layered-tiff-chips)
+- [Convert masks to COCO](#convert-masks-to-coco)
+- [Training directly](#training-directly)
+- [Slurm training](#slurm-training)
+- [Evaluation](#evaluation)
+- [Plot training logs](#plot-training-logs)
+- [Training Outputs](#training-outputs)
+- [Inference](#inference)
+- [Multi-GPU training status](#multi-gpu-training-status)
+- [Troubleshooting](#troubleshooting)
+  - [Hugging Face 401 Unauthorized](#hugging-face-401-unauthorized)
+  - [Slurm cannot find `torch`, `submitit`, or other packages](#slurm-cannot-find-torch-submitit-or-other-packages)
+  - [`libcrypt.so.2` missing on Empire AI](#libcryptso2-missing-on-empire-ai)
+  - [CUDA out of memory](#cuda-out-of-memory)
+  - [Disk quota exceeded during checkpoint saving](#disk-quota-exceeded-during-checkpoint-saving)
+  - [NaN or unstable training](#nan-or-unstable-training)
+  - [No matching image/mask pairs](#no-matching-imagemask-pairs)
+- [Notes](#notes)
 
 ## Clone the repository
 
@@ -87,48 +115,6 @@ Verify:
 ```
 
 For RunPod, keep the repository, dataset, checkpoints, and logs under `/workspace`, not `/root`, if possible.
-
-## Empire AI `libcrypt.so.2` workaround
-
-Some Empire AI GPU nodes may fail with:
-
-```text
-error while loading shared libraries: libcrypt.so.2: cannot open shared object file: No such file or directory
-```
-
-If that happens, copy `libcrypt.so.2` into a local library folder from the login node:
-
-```bash
-cd ~/sam3_irrigation_canals
-
-mkdir -p local_lib
-cp -L /cm/images/default-image/usr/lib64/libcrypt.so.2 local_lib/
-cp -L /cm/images/default-image/usr/lib64/libcrypt.so.2.0.0 local_lib/ 2>/dev/null || true
-```
-
-Then make sure your Slurm file includes:
-
-```bash
-export LD_LIBRARY_PATH="$REPO_DIR/local_lib:${LD_LIBRARY_PATH:-}"
-```
-
-You can test the venv Python with:
-
-```bash
-REPO_DIR="/path/to/sam3_irrigation_canals"
-PYTHON="$REPO_DIR/.venv/bin/python"
-
-module load python39
-export LD_LIBRARY_PATH="$REPO_DIR/local_lib:${LD_LIBRARY_PATH:-}"
-
-ldd "$PYTHON" | grep -E "libcrypt|not found"
-```
-
-A working result should show something like:
-
-```text
-libcrypt.so.2 => /path/to/sam3_irrigation_canals/local_lib/libcrypt.so.2
-```
 
 ## Dataset layout
 
@@ -338,7 +324,7 @@ experiments/irrigation_canal/logs/val_stats.json
 
 and saves loss/validation curves.
 
-## Outputs
+## Training Outputs
 
 A training run writes to:
 
@@ -373,6 +359,58 @@ test_mean_iou
 test_global_iou
 test_pixel_accuracy
 ```
+
+## Inference
+
+Use `scripts/inference.py` to run a trained SAM3 checkpoint on a folder of images and save the predicted canal masks.
+
+The script loads a local checkpoint, runs text-prompt inference with the default prompt:
+
+```text
+irrigation canal
+```
+
+and writes two output folders:
+
+```text
+<output-dir>/masks/      predicted binary masks
+<output-dir>/overlays/   predicted masks overlaid on the original images
+```
+
+Example:
+
+```bash
+python scripts/inference.py \
+  --dataset-root sam3/train/data/irrigation_canal \
+  --split test \
+  --checkpoint-path experiments/irrigation_canal/checkpoints/checkpoint.pt \
+  --output-dir predictions
+```
+
+This expects images at:
+
+```text
+sam3/train/data/irrigation_canal/test/images/
+```
+
+You can also pass an image folder directly:
+
+```bash
+python scripts/inference.py \
+  --image-dir sam3/train/data/irrigation_canal/test/images \
+  --checkpoint-path experiments/irrigation_canal/checkpoints/checkpoint.pt \
+  --output-dir predictions
+```
+
+Useful options:
+
+```bash
+--text-prompt "irrigation canal"   # prompt sent to SAM3
+--detection-threshold 0.5          # confidence threshold for predicted masks
+--alpha 0.45                       # opacity of overlay masks
+```
+
+The script does **not** load SAM3 from Hugging Face. It requires a local fine-tuned checkpoint specified with `--checkpoint-path`.
 
 ## Multi-GPU training status
 
@@ -526,6 +564,6 @@ Then rerun COCO conversion.
 ## Notes
 
 - Keep raw datasets, checkpoints, archives, and virtual environments out of Git.
-- Do not commit Hugging Face tokens or RunPod API keys.
+- Do not commit Hugging Face tokens or any API keys.
 - Use `.gitignore` for `.venv/`, `experiments/`, data folders, checkpoints, and large archives.
 - For reports, include IoU metrics in addition to pixel accuracy.
